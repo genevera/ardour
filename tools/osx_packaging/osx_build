@@ -91,6 +91,7 @@ while [ $# -gt 0 ] ; do
 	--sysdeps) PRINT_SYSDEPS=1; shift ;;
 	--nls) WITH_NLS=1 ; shift ;;
 	--chanstrip) HARRISONCHANNELSTRIP=$2 ; shift; shift ;;
+  *) shift;;
     esac
 done
 
