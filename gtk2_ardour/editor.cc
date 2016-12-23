@@ -87,6 +87,7 @@
 
 #include "actions.h"
 #include "analysis_window.h"
+#include "ardour_spacer.h"
 #include "audio_clock.h"
 #include "audio_region_view.h"
 #include "audio_streamview.h"
@@ -132,6 +133,7 @@
 #include "sfdb_ui.h"
 #include "tempo_lines.h"
 #include "time_axis_view.h"
+#include "time_info_box.h"
 #include "timers.h"
 #include "tooltips.h"
 #include "ui_config.h"
@@ -242,6 +244,7 @@ Editor::Editor ()
 	, editor_mixer_strip_width (Wide)
 	, constructed (false)
 	, _playlist_selector (0)
+	, _time_info_box (0)
 	, no_save_visual (false)
 	, leftmost_frame (0)
 	, samples_per_pixel (2048)
@@ -384,14 +387,12 @@ Editor::Editor ()
 	, _visible_track_count (-1)
 	,  toolbar_selection_clock_table (2,3)
 	,  automation_mode_button (_("mode"))
-	,  _toolbar_viewport (*manage (new Gtk::Adjustment (0, 0, 1e10)), *manage (new Gtk::Adjustment (0, 0, 1e10)))
 	, selection (new Selection (this))
 	, cut_buffer (new Selection (this))
 	, _selection_memento (new SelectionMemento())
 	, _all_region_actions_sensitized (false)
 	, _ignore_region_action (false)
 	, _last_region_menu_was_main (false)
-	, _ignore_follow_edits (false)
 	, cd_marker_bar_drag_rect (0)
 	, range_bar_drag_rect (0)
 	, transport_bar_drag_rect (0)
@@ -572,7 +573,7 @@ Editor::Editor ()
 
 	initialize_canvas ();
 
-	CairoWidget::set_focus_handler (sigc::mem_fun (*this, &Editor::reset_focus));
+	CairoWidget::set_focus_handler (sigc::mem_fun (ARDOUR_UI::instance(), &ARDOUR_UI::reset_focus));
 
 	_summary = new EditorSummary (this);
 
@@ -643,6 +644,7 @@ Editor::Editor ()
 	_regions = new EditorRegions (this);
 	_snapshots = new EditorSnapshots (this);
 	_locations = new EditorLocations (this);
+	_time_info_box = new TimeInfoBox (true);
 
 	/* these are static location signals */
 
@@ -722,11 +724,13 @@ Editor::Editor ()
 	edit_pane.set_check_divider_position (true);
 	edit_pane.add (editor_summary_pane);
 	if (!ARDOUR::Profile->get_trx()) {
-		edit_pane.add (_the_notebook);
+		_editor_list_vbox.pack_start (*_time_info_box, false, false, 0);
+		_editor_list_vbox.pack_start (_the_notebook);
+		edit_pane.add (_editor_list_vbox);
+		edit_pane.set_child_minsize (_editor_list_vbox, 30); /* rough guess at width of notebook tabs */
 	}
 
 	edit_pane.set_drag_cursor (*_cursors->expand_left_right);
-	edit_pane.set_child_minsize (_the_notebook, 30); /* rough guess at width of notebook tabs */
 	editor_summary_pane.set_drag_cursor (*_cursors->expand_up_down);
 
 	float fract;
@@ -750,13 +754,11 @@ Editor::Editor ()
 		}
 	}
 
-	top_hbox.pack_start (toolbar_frame);
+	global_vpacker.set_spacing (2);
+	global_vpacker.set_border_width (0);
 
-	HBox *hbox = manage (new HBox);
-	hbox->pack_start (edit_pane, true, true);
-
-	global_vpacker.pack_start (top_hbox, false, false);
-	global_vpacker.pack_start (*hbox, true, true);
+	global_vpacker.pack_start (toolbar_hbox, false, false);
+	global_vpacker.pack_start (edit_pane, true, true);
 	global_hpacker.pack_start (global_vpacker, true, true);
 
 	/* need to show the "contents" widget so that notebook will show if tab is switched to
@@ -830,8 +832,6 @@ Editor::Editor ()
 	_last_region_menu_was_main = false;
 	_popup_region_menu_item = 0;
 
-	_ignore_follow_edits = false;
-
 	_show_marker_lines = false;
 
         /* Button bindings */
@@ -875,6 +875,7 @@ Editor::~Editor()
 	delete _snapshots;
 	delete _locations;
 	delete _playlist_selector;
+	delete _time_info_box;
 
 	for (list<XMLNode *>::iterator i = selection_op_history.begin(); i != selection_op_history.end(); ++i) {
 		delete *i;
@@ -1182,7 +1183,7 @@ Editor::generic_event_handler (GdkEvent* ev)
 			/* leaving window, so reset focus, thus ending any and
 			   all text entry operations.
 			*/
-			reset_focus (&contents());
+			ARDOUR_UI::instance()->reset_focus (&contents());
 			break;
 		}
 		break;
@@ -1312,6 +1313,7 @@ Editor::set_session (Session *t)
 	_snapshots->set_session (_session);
 	_routes->set_session (_session);
 	_locations->set_session (_session);
+	_time_info_box->set_session (_session);
 
 	if (rhythm_ferret) {
 		rhythm_ferret->set_session (_session);
@@ -1947,7 +1949,7 @@ Editor::add_selection_context_items (Menu_Helpers::MenuList& edit_items)
 	edit_items.push_back (MenuElem (_("Loop Range"), sigc::bind (sigc::mem_fun(*this, &Editor::set_loop_from_selection), true)));
 
 	edit_items.push_back (SeparatorElem());
-	edit_items.push_back (MenuElem (_("Zoom to Range"), sigc::bind (sigc::mem_fun(*this, &Editor::temporal_zoom_selection), false)));
+	edit_items.push_back (MenuElem (_("Zoom to Range"), sigc::bind (sigc::mem_fun(*this, &Editor::temporal_zoom_selection), Horizontal)));
 
 	edit_items.push_back (SeparatorElem());
 	edit_items.push_back (MenuElem (_("Loudness Analysis"), sigc::mem_fun(*this, &Editor::loudness_analyze_range_selection)));
@@ -2239,10 +2241,8 @@ Editor::set_snap_to (SnapType st)
 	case SnapToBeatDiv4:
 	case SnapToBeatDiv3:
 	case SnapToBeatDiv2: {
-		std::vector<TempoMap::BBTPoint> grid;
-		compute_current_bbt_points (grid, leftmost_frame, leftmost_frame + current_page_samples());
-		compute_bbt_ruler_scale (grid, leftmost_frame, leftmost_frame + current_page_samples());
-		update_tempo_based_rulers (grid);
+		compute_bbt_ruler_scale (leftmost_frame, leftmost_frame + current_page_samples());
+		update_tempo_based_rulers ();
 		break;
 	}
 
@@ -2733,18 +2733,18 @@ Editor::snap_to (framepos_t& start, RoundMode direction, bool for_mark, bool ens
 void
 Editor::timecode_snap_to_internal (framepos_t& start, RoundMode direction, bool /*for_mark*/)
 {
-	const framepos_t one_timecode_second = (framepos_t)(rint(_session->timecode_frames_per_second()) * _session->frames_per_timecode_frame());
-	framepos_t one_timecode_minute = (framepos_t)(rint(_session->timecode_frames_per_second()) * _session->frames_per_timecode_frame() * 60);
+	const framepos_t one_timecode_second = (framepos_t)(rint(_session->timecode_frames_per_second()) * _session->samples_per_timecode_frame());
+	framepos_t one_timecode_minute = (framepos_t)(rint(_session->timecode_frames_per_second()) * _session->samples_per_timecode_frame() * 60);
 
 	switch (_snap_type) {
 	case SnapToTimecodeFrame:
 		if ((direction == RoundUpMaybe || direction == RoundDownMaybe) &&
-		    fmod((double)start, (double)_session->frames_per_timecode_frame()) == 0) {
+		    fmod((double)start, (double)_session->samples_per_timecode_frame()) == 0) {
 			/* start is already on a whole timecode frame, do nothing */
-		} else if (((direction == 0) && (fmod((double)start, (double)_session->frames_per_timecode_frame()) > (_session->frames_per_timecode_frame() / 2))) || (direction > 0)) {
-			start = (framepos_t) (ceil ((double) start / _session->frames_per_timecode_frame()) * _session->frames_per_timecode_frame());
+		} else if (((direction == 0) && (fmod((double)start, (double)_session->samples_per_timecode_frame()) > (_session->samples_per_timecode_frame() / 2))) || (direction > 0)) {
+			start = (framepos_t) (ceil ((double) start / _session->samples_per_timecode_frame()) * _session->samples_per_timecode_frame());
 		} else {
-			start = (framepos_t) (floor ((double) start / _session->frames_per_timecode_frame()) *  _session->frames_per_timecode_frame());
+			start = (framepos_t) (floor ((double) start / _session->samples_per_timecode_frame()) *  _session->samples_per_timecode_frame());
 		}
 		break;
 
@@ -2853,55 +2853,55 @@ Editor::snap_to_internal (framepos_t& start, RoundMode direction, bool for_mark,
 		break;
 
 	case SnapToBeatDiv128:
-		start = _session->tempo_map().round_to_beat_subdivision (start, 128, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 128, direction);
 		break;
 	case SnapToBeatDiv64:
-		start = _session->tempo_map().round_to_beat_subdivision (start, 64, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 64, direction);
 		break;
 	case SnapToBeatDiv32:
-		start = _session->tempo_map().round_to_beat_subdivision (start, 32, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 32, direction);
 		break;
 	case SnapToBeatDiv28:
-		start = _session->tempo_map().round_to_beat_subdivision (start, 28, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 28, direction);
 		break;
 	case SnapToBeatDiv24:
-		start = _session->tempo_map().round_to_beat_subdivision (start, 24, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 24, direction);
 		break;
 	case SnapToBeatDiv20:
-		start = _session->tempo_map().round_to_beat_subdivision (start, 20, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 20, direction);
 		break;
 	case SnapToBeatDiv16:
-		start = _session->tempo_map().round_to_beat_subdivision (start, 16, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 16, direction);
 		break;
 	case SnapToBeatDiv14:
-		start = _session->tempo_map().round_to_beat_subdivision (start, 14, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 14, direction);
 		break;
 	case SnapToBeatDiv12:
-		start = _session->tempo_map().round_to_beat_subdivision (start, 12, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 12, direction);
 		break;
 	case SnapToBeatDiv10:
-		start = _session->tempo_map().round_to_beat_subdivision (start, 10, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 10, direction);
 		break;
 	case SnapToBeatDiv8:
-		start = _session->tempo_map().round_to_beat_subdivision (start, 8, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 8, direction);
 		break;
 	case SnapToBeatDiv7:
-		start = _session->tempo_map().round_to_beat_subdivision (start, 7, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 7, direction);
 		break;
 	case SnapToBeatDiv6:
-		start = _session->tempo_map().round_to_beat_subdivision (start, 6, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 6, direction);
 		break;
 	case SnapToBeatDiv5:
-		start = _session->tempo_map().round_to_beat_subdivision (start, 5, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 5, direction);
 		break;
 	case SnapToBeatDiv4:
-		start = _session->tempo_map().round_to_beat_subdivision (start, 4, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 4, direction);
 		break;
 	case SnapToBeatDiv3:
-		start = _session->tempo_map().round_to_beat_subdivision (start, 3, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 3, direction);
 		break;
 	case SnapToBeatDiv2:
-		start = _session->tempo_map().round_to_beat_subdivision (start, 2, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 2, direction);
 		break;
 
 	case SnapToMark:
@@ -2919,11 +2919,16 @@ Editor::snap_to_internal (framepos_t& start, RoundMode direction, bool for_mark,
 		} else if (after == max_framepos) {
 			start = before;
 		} else if (before != max_framepos && after != max_framepos) {
-			/* have before and after */
-			if ((start - before) < (after - start)) {
-				start = before;
-			} else {
+			if ((direction == RoundUpMaybe || direction == RoundUpAlways))
 				start = after;
+			else if ((direction == RoundDownMaybe || direction == RoundDownAlways))
+				start = before;
+			else if (direction ==  0 ) {
+				if ((start - before) < (after - start)) {
+					start = before;
+				} else {
+					start = after;
+				}
 			}
 		}
 
@@ -3012,15 +3017,17 @@ Editor::setup_toolbar ()
 	mouse_mode_size_group->add_widget (mouse_draw_button);
 	mouse_mode_size_group->add_widget (mouse_content_button);
 
-	mouse_mode_size_group->add_widget (zoom_in_button);
-	mouse_mode_size_group->add_widget (zoom_out_button);
-	mouse_mode_size_group->add_widget (zoom_preset_selector);
-	mouse_mode_size_group->add_widget (zoom_out_full_button);
-	mouse_mode_size_group->add_widget (zoom_focus_selector);
-
-	mouse_mode_size_group->add_widget (tav_shrink_button);
-	mouse_mode_size_group->add_widget (tav_expand_button);
-	mouse_mode_size_group->add_widget (visible_tracks_selector);
+	if (!Profile->get_mixbus()) {
+		mouse_mode_size_group->add_widget (zoom_in_button);
+		mouse_mode_size_group->add_widget (zoom_out_button);
+		mouse_mode_size_group->add_widget (zoom_out_full_button);
+		mouse_mode_size_group->add_widget (zoom_focus_selector);
+		mouse_mode_size_group->add_widget (tav_shrink_button);
+		mouse_mode_size_group->add_widget (tav_expand_button);
+	} else {
+		mouse_mode_size_group->add_widget (zoom_preset_selector);
+		mouse_mode_size_group->add_widget (visible_tracks_selector);
+	}
 
 	mouse_mode_size_group->add_widget (snap_type_selector);
 	mouse_mode_size_group->add_widget (snap_mode_selector);
@@ -3075,8 +3082,7 @@ Editor::setup_toolbar ()
 	RefPtr<Action> act;
 
 	zoom_preset_selector.set_name ("zoom button");
-	zoom_preset_selector.set_image(::get_icon ("time_exp"));
-	zoom_preset_selector.set_size_request (42, -1);
+	zoom_preset_selector.set_icon (ArdourIcon::ZoomExpand);
 
 	zoom_in_button.set_name ("zoom button");
 	zoom_in_button.set_icon (ArdourIcon::ZoomIn);
@@ -3108,10 +3114,12 @@ Editor::setup_toolbar ()
 	}
 
 	/* Track zoom buttons */
+	_track_box.set_spacing (2);
+	_track_box.set_border_width (2);
+
 	visible_tracks_selector.set_name ("zoom button");
 	if (Profile->get_mixbus()) {
-		visible_tracks_selector.set_image(::get_icon ("tav_exp"));
-		visible_tracks_selector.set_size_request (42, -1);
+		visible_tracks_selector.set_icon (ArdourIcon::TimeAxisExpand);
 	} else {
 		set_size_request_to_display_given_text (visible_tracks_selector, _("All"), 30, 2);
 	}
@@ -3127,14 +3135,14 @@ Editor::setup_toolbar ()
 	tav_shrink_button.set_related_action (act);
 
 	if (ARDOUR::Profile->get_mixbus()) {
-		_zoom_box.pack_start (visible_tracks_selector);
+		_track_box.pack_start (visible_tracks_selector);
 	} else if (ARDOUR::Profile->get_trx()) {
-		_zoom_box.pack_start (tav_shrink_button);
-		_zoom_box.pack_start (tav_expand_button);
+		_track_box.pack_start (tav_shrink_button);
+		_track_box.pack_start (tav_expand_button);
 	} else {
-		_zoom_box.pack_start (visible_tracks_selector);
-		_zoom_box.pack_start (tav_shrink_button);
-		_zoom_box.pack_start (tav_expand_button);
+		_track_box.pack_start (visible_tracks_selector);
+		_track_box.pack_start (tav_shrink_button);
+		_track_box.pack_start (tav_expand_button);
 	}
 
 	snap_box.set_spacing (2);
@@ -3148,7 +3156,13 @@ Editor::setup_toolbar ()
 
 	snap_box.pack_start (snap_mode_selector, false, false);
 	snap_box.pack_start (snap_type_selector, false, false);
-	snap_box.pack_start (edit_point_selector, false, false);
+
+	/* Edit Point*/
+	HBox *ep_box = manage (new HBox);
+	ep_box->set_spacing (2);
+	ep_box->set_border_width (2);
+
+	ep_box->pack_start (edit_point_selector, false, false);
 
 	/* Nudge */
 
@@ -3166,35 +3180,35 @@ Editor::setup_toolbar ()
 
 	/* Pack everything in... */
 
-	HBox* hbox = manage (new HBox);
-	hbox->set_spacing(2);
-
 	toolbar_hbox.set_spacing (2);
-	toolbar_hbox.set_border_width (1);
+	toolbar_hbox.set_border_width (2);
 
 	toolbar_hbox.pack_start (*mode_box, false, false);
+
 	if (!ARDOUR::Profile->get_trx()) {
+
+		toolbar_hbox.pack_start (*(manage (new ArdourVSpacer ())), false, false, 3);
+
 		toolbar_hbox.pack_start (_zoom_box, false, false);
-		toolbar_hbox.pack_start (*hbox, false, false);
+
+		toolbar_hbox.pack_start (*(manage (new ArdourVSpacer ())), false, false, 3);
+
+		toolbar_hbox.pack_start (_track_box, false, false);
+
+		toolbar_hbox.pack_start (*(manage (new ArdourVSpacer ())), false, false, 3);
+
+		toolbar_hbox.pack_start (snap_box, false, false);
+
+		toolbar_hbox.pack_start (*(manage (new ArdourVSpacer ())), false, false, 3);
+
+		toolbar_hbox.pack_start (*ep_box, false, false);
+
+		toolbar_hbox.pack_start (*(manage (new ArdourVSpacer ())), false, false, 3);
+
+		toolbar_hbox.pack_start (*nudge_box, false, false);
 	}
 
-	if (!ARDOUR::Profile->get_trx()) {
-		hbox->pack_start (snap_box, false, false);
-		hbox->pack_start (*nudge_box, false, false);
-	}
-
-	hbox->show_all ();
-
-	toolbar_base.set_name ("ToolBarBase");
-	toolbar_base.add (toolbar_hbox);
-
-	_toolbar_viewport.add (toolbar_base);
-	/* stick to the required height but allow width to vary if there's not enough room */
-	_toolbar_viewport.set_size_request (1, -1);
-
-	toolbar_frame.set_shadow_type (SHADOW_OUT);
-	toolbar_frame.set_name ("BaseFrame");
-	toolbar_frame.add (_toolbar_viewport);
+	toolbar_hbox.show_all ();
 }
 
 void
@@ -3796,7 +3810,7 @@ Editor::build_track_count_menu ()
 		zoom_preset_selector.AddMenuElem (MenuElem (_("Zoom to 8 hours"), sigc::bind (sigc::mem_fun(*this, &Editor::set_zoom_preset), 8 * 60 * 60 * 1000)));
 		zoom_preset_selector.AddMenuElem (MenuElem (_("Zoom to 24 hours"), sigc::bind (sigc::mem_fun(*this, &Editor::set_zoom_preset), 24 * 60 * 60 * 1000)));
 		zoom_preset_selector.AddMenuElem (MenuElem (_("Zoom to Session"), sigc::mem_fun(*this, &Editor::temporal_zoom_session)));
-		zoom_preset_selector.AddMenuElem (MenuElem (_("Zoom to Range/Region Selection"), sigc::bind (sigc::mem_fun(*this, &Editor::temporal_zoom_selection), false)));
+		zoom_preset_selector.AddMenuElem (MenuElem (_("Zoom to Range/Region Selection"), sigc::bind (sigc::mem_fun(*this, &Editor::temporal_zoom_selection), Horizontal)));
 	}
 }
 
@@ -4057,7 +4071,7 @@ Editor::get_grid_beat_divisions(framepos_t position)
     if the grid is snapped to bars, returns -1.
     @param event_state the current keyboard modifier mask.
 */
-unsigned
+int32_t
 Editor::get_grid_music_divisions (uint32_t event_state)
 {
 	if (snap_mode() == Editing::SnapOff && !ArdourKeyboard::indicates_snap (event_state)) {
@@ -4105,10 +4119,11 @@ Editor::get_grid_type_as_beats (bool& success, framepos_t position)
 
 	switch (_snap_type) {
 	case SnapToBeat:
-		return Evoral::Beats(1.0);
+		return Evoral::Beats(4.0 / _session->tempo_map().meter_at_frame (position).note_divisor());
 	case SnapToBar:
 		if (_session) {
-			return Evoral::Beats(_session->tempo_map().meter_at_frame (position).divisions_per_bar());
+			const Meter& m = _session->tempo_map().meter_at_frame (position);
+			return Evoral::Beats((4.0 * m.divisions_per_bar()) / m.note_divisor());
 		}
 		break;
 	default:
@@ -4331,13 +4346,13 @@ Editor::clear_playlists (TimeAxisView* v)
 void
 Editor::mapped_use_new_playlist (RouteTimeAxisView& atv, uint32_t sz, vector<boost::shared_ptr<ARDOUR::Playlist> > const & playlists)
 {
-	atv.use_new_playlist (sz > 1 ? false : true, playlists);
+	atv.use_new_playlist (sz > 1 ? false : true, playlists, false);
 }
 
 void
 Editor::mapped_use_copy_playlist (RouteTimeAxisView& atv, uint32_t sz, vector<boost::shared_ptr<ARDOUR::Playlist> > const & playlists)
 {
-	atv.use_copy_playlist (sz > 1 ? false : true, playlists);
+	atv.use_new_playlist (sz > 1 ? false : true, playlists, true);
 }
 
 void
@@ -4547,6 +4562,12 @@ Editor::set_samples_per_pixel (framecnt_t spp)
 	instant_save ();
 }
 
+framepos_t
+Editor::playhead_cursor_sample () const
+{
+	return playhead_cursor->current_frame();
+}
+
 void
 Editor::queue_visual_videotimeline_update ()
 {
@@ -4613,10 +4634,8 @@ Editor::visual_changer (const VisualChange& vc)
 
 		compute_fixed_ruler_scale ();
 
-		std::vector<TempoMap::BBTPoint> grid;
-		compute_current_bbt_points (grid, vc.time_origin, pending_visual_change.time_origin + current_page_samples());
-		compute_bbt_ruler_scale (grid, vc.time_origin, pending_visual_change.time_origin + current_page_samples());
-		update_tempo_based_rulers (grid);
+		compute_bbt_ruler_scale (vc.time_origin, pending_visual_change.time_origin + current_page_samples());
+		update_tempo_based_rulers ();
 
 		update_video_timeline();
 	}
@@ -4662,9 +4681,11 @@ Editor::get_preferred_edit_position (EditIgnoreOption ignore, bool from_context_
 	framepos_t where = 0;
 	EditPoint ep = _edit_point;
 
-	if (Profile->get_mixbus())
-		if (ep == EditAtSelectedMarker)
+	if (Profile->get_mixbus()) {
+		if (ep == EditAtSelectedMarker) {
 			ep = EditAtPlayhead;
+		}
+	}
 
 	if (from_outside_canvas && (ep == EditAtMouse)) {
 		ep = EditAtPlayhead;
@@ -5167,7 +5188,7 @@ Editor::region_view_added (RegionView * rv)
 
 	MidiRegionView* mrv = dynamic_cast<MidiRegionView*> (rv);
 	if (mrv) {
-		list<pair<PBD::ID const, list<boost::shared_ptr<Evoral::Note<Evoral::Beats> > > > >::iterator rnote;
+		list<pair<PBD::ID const, list<Evoral::event_id_t> > >::iterator rnote;
 		for (rnote = selection->pending_midi_note_selection.begin(); rnote != selection->pending_midi_note_selection.end(); ++rnote) {
 			if (rv->region()->id () == (*rnote).first) {
 				mrv->select_notes ((*rnote).second);
@@ -5824,9 +5845,9 @@ void
 Editor::show_editor_list (bool yn)
 {
 	if (yn) {
-		_the_notebook.show ();
+		_editor_list_vbox.show ();
 	} else {
-		_the_notebook.hide ();
+		_editor_list_vbox.hide ();
 	}
 }
 

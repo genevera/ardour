@@ -106,21 +106,24 @@ public:
 	void set_samples_per_pixel (double spu);
 	void set_colors();
 
-	void update_range();
+	void update_contents_height();
 
 	void add_note(NoteBase*);
-	void update_note (NoteBase*);
+	void update_note (Note* note,  bool hide);
+	void update_hit (Hit* hit, bool hide);
 	void remove_note (NoteBase*);
 
 	void clear_events();
 
 private:
-	ArdourCanvas::Color _fill;
 	ArdourCanvas::Color _outline;
+	ArdourCanvas::Rectangle* _tmp_rect;
+	ArdourCanvas::Polygon* _tmp_poly;
 
 	MidiGhostRegion::GhostEvent* find_event (NoteBase*);
+	typedef Evoral::Note<Evoral::Beats> NoteType;
 
-	typedef std::list<MidiGhostRegion::GhostEvent*> EventList;
+	typedef std::map<boost::shared_ptr<NoteType>, MidiGhostRegion::GhostEvent* > EventList;
 	EventList events;
 	EventList::iterator _optimization_iterator;
 };

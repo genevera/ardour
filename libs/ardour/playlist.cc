@@ -676,7 +676,12 @@ Playlist::flush_notifications (bool from_undo)
 	 framepos_t pos = position;
 
 	 if (times == 1 && auto_partition){
-		 partition(pos - 1, (pos + region->length()), true);
+		RegionList thawlist;
+		partition_internal (pos - 1, (pos + region->length()), true, thawlist);
+		for (RegionList::iterator i = thawlist.begin(); i != thawlist.end(); ++i) {
+			(*i)->resume_property_changes ();
+			_session.add_command (new StatefulDiffCommand (*i));
+		}
 	 }
 
 	 if (itimes >= 1) {
@@ -765,6 +770,7 @@ Playlist::flush_notifications (bool from_undo)
 	 notify_region_added (region);
 
 	 region->PropertyChanged.connect_same_thread (region_state_changed_connections, boost::bind (&Playlist::region_changed_proxy, this, _1, boost::weak_ptr<Region> (region)));
+	 region->DropReferences.connect_same_thread (region_drop_references_connections, boost::bind (&Playlist::region_going_away, this, boost::weak_ptr<Region> (region)));
 
 	 return true;
  }
@@ -872,8 +878,10 @@ Playlist::flush_notifications (bool from_undo)
  Playlist::partition (framepos_t start, framepos_t end, bool cut)
  {
 	 RegionList thawlist;
-
-	 partition_internal (start, end, cut, thawlist);
+	 {
+	  RegionWriteLock lock(this);
+	  partition_internal (start, end, cut, thawlist);
+	 }
 
 	 for (RegionList::iterator i = thawlist.begin(); i != thawlist.end(); ++i) {
 		 (*i)->resume_property_changes ();
@@ -891,7 +899,6 @@ Playlist::flush_notifications (bool from_undo)
 	 RegionList new_regions;
 
 	 {
-		 RegionWriteLock rlock (this);
 
 		 boost::shared_ptr<Region> region;
 		 boost::shared_ptr<Region> current;
@@ -1000,6 +1007,7 @@ Playlist::flush_notifications (bool from_undo)
 
 				 /* "front" ***** */
 
+				 current->clear_changes ();
 				 current->suspend_property_changes ();
 				 thawlist.push_back (current);
 				 current->cut_end (pos2 - 1);
@@ -1040,6 +1048,7 @@ Playlist::flush_notifications (bool from_undo)
 
 				 /* front ****** */
 
+				 current->clear_changes ();
 				 current->suspend_property_changes ();
 				 thawlist.push_back (current);
 				 current->cut_end (pos2 - 1);
@@ -1084,6 +1093,7 @@ Playlist::flush_notifications (bool from_undo)
 
 				 /* end */
 
+				 current->clear_changes ();
 				 current->suspend_property_changes ();
 				 thawlist.push_back (current);
 				 current->trim_front (pos3);
@@ -1118,7 +1128,7 @@ Playlist::flush_notifications (bool from_undo)
 
 	//keep track of any dead space at end (for pasting into Ripple or Splice mode)
 	framepos_t wanted_length = end-start;
-	_end_space = wanted_length - get_extent().second-get_extent().first;
+	_end_space = wanted_length - _get_extent().second - _get_extent().first;
  }
 
  boost::shared_ptr<Playlist>
@@ -1184,7 +1194,10 @@ Playlist::flush_notifications (bool from_undo)
 		 return boost::shared_ptr<Playlist>();
 	 }
 
-	 partition_internal (start, start+cnt-1, true, thawlist);
+	 {
+		RegionWriteLock rlock (this);
+		partition_internal (start, start+cnt-1, true, thawlist);
+	 }
 
 	 for (RegionList::iterator i = thawlist.begin(); i != thawlist.end(); ++i) {
 		 (*i)->resume_property_changes();
@@ -1326,7 +1339,7 @@ Playlist::duplicate_range (AudioRange& range, float times)
 }
 
 void
-Playlist::duplicate_ranges (std::list<AudioRange>& ranges, float /* times */)
+Playlist::duplicate_ranges (std::list<AudioRange>& ranges, float times)
 {
 	if (ranges.empty()) {
 		return;
@@ -1344,9 +1357,14 @@ Playlist::duplicate_ranges (std::list<AudioRange>& ranges, float /* times */)
 
 	framecnt_t offset = max_pos - min_pos;
 
-	for (list<AudioRange>::iterator i = ranges.begin(); i != ranges.end(); ++i) {
-		boost::shared_ptr<Playlist> pl = copy ((*i).start, (*i).length(), true);
-		paste (pl, (*i).start + offset, 1.0f, 0); // times ??
+	int count = 1;
+	int itimes = (int) floor (times);
+	while (itimes--) {
+		for (list<AudioRange>::iterator i = ranges.begin (); i != ranges.end (); ++i) {
+			boost::shared_ptr<Playlist> pl = copy ((*i).start, (*i).length (), true);
+			paste (pl, (*i).start + (offset * count), 1.0f, 0);
+		}
+		++count;
 	}
 }
 
@@ -1745,6 +1763,7 @@ Playlist::region_bounds_changed (const PropertyChange& what_changed, boost::shar
 		 RegionWriteLock rl (this);
 
 		 region_state_changed_connections.drop_connections ();
+		 region_drop_references_connections.drop_connections ();
 
 		 for (RegionList::iterator i = regions.begin(); i != regions.end(); ++i) {
 			 pending_removes.insert (*i);

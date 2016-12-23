@@ -49,7 +49,9 @@ PatchChange::PatchChange(MidiRegionView&                   region,
                          double                            x,
                          double                            y,
                          ARDOUR::InstrumentInfo&           info,
-                         ARDOUR::MidiModel::PatchChangePtr patch)
+                         ARDOUR::MidiModel::PatchChangePtr patch,
+			 ArdourCanvas::Color               outline_color,
+			 ArdourCanvas::Color               fill_color)
 	: _region (region)
 	, _info (info)
 	, _patch (patch)
@@ -58,8 +60,8 @@ PatchChange::PatchChange(MidiRegionView&                   region,
 	_flag = new ArdourCanvas::Flag (
 		parent,
 		height,
-		UIConfiguration::instance().color ("midi patch change outline"),
-		UIConfiguration::instance().color_mod ("midi patch change fill", "midi patch change fill"),
+		outline_color,
+		fill_color,
 		ArdourCanvas::Duple (x, y),
 		true);
 
@@ -82,7 +84,7 @@ PatchChange::initialize_popup_menus()
 
 	boost::shared_ptr<ChannelNameSet> channel_name_set = _info.get_patches (_patch->channel());
 
-	if (!channel_name_set) {
+	if (!channel_name_set || channel_name_set->patch_banks().size () == 0) {
 		return;
 	}
 

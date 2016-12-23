@@ -115,8 +115,7 @@ public:
 	void fade_range (TimeSelection&);
 
 	/* The editor calls these when mapping an operation across multiple tracks */
-	void use_new_playlist (bool prompt, std::vector<boost::shared_ptr<ARDOUR::Playlist> > const &);
-	void use_copy_playlist (bool prompt, std::vector<boost::shared_ptr<ARDOUR::Playlist> > const &);
+	void use_new_playlist (bool prompt, std::vector<boost::shared_ptr<ARDOUR::Playlist> > const &, bool copy);
 	void clear_playlist ();
 
 	/* group playlist name resolving */
@@ -183,7 +182,7 @@ protected:
 
 	void update_diskstream_display ();
 
-	gint route_group_click  (GdkEventButton *);
+	bool route_group_click  (GdkEventButton *);
 
 	void processors_changed (ARDOUR::RouteProcessorChange);
 
@@ -215,6 +214,8 @@ protected:
 	void route_property_changed (const PBD::PropertyChange&);
 	bool name_entry_changed (std::string const&);
 
+	virtual void toggle_channel_selector () {}
+
 	void blink_rec_display (bool onoff);
 
 	virtual void label_view ();
@@ -227,13 +228,13 @@ protected:
 
 	void set_align_choice (Gtk::RadioMenuItem*, ARDOUR::AlignChoice, bool apply_to_selection = false);
 
-	void         playlist_click ();
+	bool         playlist_click (GdkEventButton *);
 	void         show_playlist_selector ();
 	void         playlist_changed ();
 
 	void rename_current_playlist ();
 
-	void         automation_click ();
+	bool         automation_click (GdkEventButton *);
 
 	virtual void show_all_automation (bool apply_to_selection = false);
 	virtual void show_existing_automation (bool apply_to_selection = false);
@@ -249,7 +250,7 @@ protected:
 	void create_mute_automation_child (const Evoral::Parameter &, bool);
 	void setup_processor_menu_and_curves ();
 	void route_color_changed ();
-        bool can_edit_name() const;
+	bool can_edit_name() const;
 
 	boost::shared_ptr<AutomationTimeAxisView> gain_track;
 	boost::shared_ptr<AutomationTimeAxisView> trim_track;
@@ -281,7 +282,9 @@ protected:
 
 	ArdourCanvas::Rectangle* timestretch_rect;
 
+#ifdef XXX_OLD_DESTRUCTIVE_API_XXX
 	void set_track_mode (ARDOUR::TrackMode, bool apply_to_selection = false);
+#endif
 
 	/** Information about all automatable processor parameters that apply to
 	 *  this route.  The Amp processor is not included in this list.

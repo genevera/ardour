@@ -17,6 +17,7 @@
 
 */
 
+#include <map>
 #include <boost/algorithm/string.hpp>
 
 #include <gtkmm2ext/gtk_ui.h>
@@ -38,11 +39,13 @@
 #include "ardour/vca.h"
 #include "ardour/vca_manager.h"
 #include "ardour/audio_track.h"
+#include "ardour/audio_port.h"
 #include "ardour/audioengine.h"
 #include "ardour/filename_extensions.h"
 #include "ardour/midi_track.h"
 #include "ardour/monitor_control.h"
 #include "ardour/internal_send.h"
+#include "ardour/panner_shell.h"
 #include "ardour/profile.h"
 #include "ardour/phase_control.h"
 #include "ardour/send.h"
@@ -204,6 +207,7 @@ RouteUI::init ()
 
 	_session->config.ParameterChanged.connect (*this, invalidator (*this), boost::bind (&RouteUI::parameter_changed, this, _1), gui_context());
 	Config->ParameterChanged.connect (*this, invalidator (*this), boost::bind (&RouteUI::parameter_changed, this, _1), gui_context());
+	UIConfiguration::instance().ParameterChanged.connect (sigc::mem_fun (this, &RouteUI::parameter_changed));
 
 	rec_enable_button->signal_button_press_event().connect (sigc::mem_fun(*this, &RouteUI::rec_enable_press), false);
 	rec_enable_button->signal_button_release_event().connect (sigc::mem_fun(*this, &RouteUI::rec_enable_release), false);
@@ -284,7 +288,9 @@ RouteUI::set_route (boost::shared_ptr<Route> rp)
 
 	if (is_track()) {
 		track()->FreezeChange.connect (*this, invalidator (*this), boost::bind (&RouteUI::map_frozen, this), gui_context());
+#ifdef XXX_OLD_DESTRUCTIVE_API_XXX
 		track()->TrackModeChanged.connect (route_connections, invalidator (*this), boost::bind (&RouteUI::track_mode_changed, this), gui_context());
+#endif
 		track_mode_changed();
 	}
 
@@ -422,7 +428,6 @@ RouteUI::mute_press (GdkEventButton* ev)
 					_mute_release->routes = copy;
 				}
 
-				DisplaySuspender ds;
 				_session->set_controls (route_list_to_control_list (copy, &Stripable::mute_control), _route->muted_by_self() ? 0.0 : 1.0, Controllable::UseGroup);
 
 			} else if (Keyboard::modifier_state_equals (ev->state, Keyboard::PrimaryModifier)) {
@@ -451,7 +456,6 @@ RouteUI::mute_press (GdkEventButton* ev)
 						_mute_release->routes = rl;
 					}
 
-					DisplaySuspender ds;
 					_session->set_controls (route_list_to_control_list (rl, &Stripable::mute_control), _route->muted_by_self() ? 0.0 : 1.0, Controllable::InverseGroup);
 				}
 
@@ -478,7 +482,6 @@ bool
 RouteUI::mute_release (GdkEventButton* /*ev*/)
 {
 	if (_mute_release){
-		DisplaySuspender ds;
 		_session->set_controls (route_list_to_control_list (_mute_release->routes, &Stripable::mute_control), _mute_release->active, Controllable::UseGroup);
 		delete _mute_release;
 		_mute_release = 0;
@@ -578,7 +581,6 @@ RouteUI::solo_press(GdkEventButton* ev)
 					_solo_release->routes = _session->get_routes ();
 				}
 
-				DisplaySuspender ds;
 				_session->set_controls (route_list_to_control_list (_session->get_routes(), &Stripable::solo_control), !_route->solo_control()->get_value(), Controllable::UseGroup);
 
 			} else if (Keyboard::modifier_state_contains (ev->state, Keyboard::ModifierMask (Keyboard::PrimaryModifier|Keyboard::SecondaryModifier))) {
@@ -648,8 +650,6 @@ RouteUI::solo_press(GdkEventButton* ev)
 						_solo_release->routes = rl;
 					}
 
-					DisplaySuspender ds;
-
 					_session->set_controls (route_list_to_control_list (rl, &Stripable::solo_control), !_route->self_soloed(), Controllable::InverseGroup);
 				}
 
@@ -667,7 +667,6 @@ RouteUI::solo_press(GdkEventButton* ev)
 					_solo_release->routes = rl;
 				}
 
-				DisplaySuspender ds;
 				_session->set_controls (route_list_to_control_list (rl, &Stripable::solo_control), !_route->self_soloed(), Controllable::UseGroup);
 			}
 		}
@@ -684,7 +683,6 @@ RouteUI::solo_release (GdkEventButton* /*ev*/)
 		if (_solo_release->exclusive) {
 
 		} else {
-			DisplaySuspender ds;
 			_session->set_controls (route_list_to_control_list (_solo_release->routes, &Stripable::solo_control), _solo_release->active ? 1.0 : 0.0, Controllable::UseGroup);
 		}
 
@@ -731,7 +729,6 @@ RouteUI::rec_enable_press(GdkEventButton* ev)
 
 		} else if (Keyboard::modifier_state_equals (ev->state, Keyboard::ModifierMask (Keyboard::PrimaryModifier|Keyboard::TertiaryModifier))) {
 
-			DisplaySuspender ds;
 			_session->set_controls (route_list_to_control_list (_session->get_routes(), &Stripable::rec_enable_control), !track()->rec_enable_control()->get_value(), Controllable::NoGroup);
 
 		} else if (Keyboard::modifier_state_equals (ev->state, Keyboard::PrimaryModifier)) {
@@ -747,7 +744,6 @@ RouteUI::rec_enable_press(GdkEventButton* ev)
 				rl.reset (new RouteList);
 				rl->push_back (_route);
 
-				DisplaySuspender ds;
 				_session->set_controls (route_list_to_control_list (rl, &Stripable::rec_enable_control), !track()->rec_enable_control()->get_value(), Controllable::InverseGroup);
 			}
 
@@ -869,7 +865,6 @@ RouteUI::monitor_release (GdkEventButton* ev, MonitorChoice monitor_choice)
 		rl->push_back (route());
 	}
 
-	DisplaySuspender ds;
 	_session->set_controls (route_list_to_control_list (rl, &Stripable::monitoring_control), (double) mc, Controllable::UseGroup);
 
 	return false;
@@ -1204,28 +1199,28 @@ RouteUI::update_solo_display ()
 		solo_isolated_check->set_active (yn);
 	}
 
-        set_button_names ();
+	set_button_names ();
 
-        if (solo_isolated_led) {
-	        if (_route->solo_isolate_control()->solo_isolated()) {
+	if (solo_isolated_led) {
+		if (_route->solo_isolate_control()->solo_isolated()) {
 			solo_isolated_led->set_active_state (Gtkmm2ext::ExplicitActive);
 		} else {
 			solo_isolated_led->unset_active_state ();
 		}
-        }
+	}
 
-        if (solo_safe_led) {
-	        if (_route->solo_safe_control()->solo_safe()) {
+	if (solo_safe_led) {
+		if (_route->solo_safe_control()->solo_safe()) {
 			solo_safe_led->set_active_state (Gtkmm2ext::ExplicitActive);
 		} else {
 			solo_safe_led->unset_active_state ();
 		}
-        }
+	}
 
 	solo_button->set_active_state (solo_active_state (_route));
 
-        /* some changes to solo status can affect mute display, so catch up
-         */
+	/* some changes to solo status can affect mute display, so catch up
+	 */
 
 	update_mute_display ();
 }
@@ -1483,11 +1478,9 @@ RouteUI::solo_isolate_button_release (GdkEventButton* ev)
 
 			if (model) {
 				/* disable isolate for all routes */
-				DisplaySuspender ds;
 				_session->set_controls (route_list_to_control_list (_session->get_routes(), &Stripable::solo_isolate_control), 0.0, Controllable::NoGroup);
 			} else {
 				/* enable isolate for all routes */
-				DisplaySuspender ds;
 				_session->set_controls (route_list_to_control_list (_session->get_routes(), &Stripable::solo_isolate_control), 1.0, Controllable::NoGroup);
 			}
 
@@ -1499,7 +1492,6 @@ RouteUI::solo_isolate_button_release (GdkEventButton* ev)
 
 				boost::shared_ptr<RouteList> rl (new RouteList);
 				rl->push_back (_route);
-				DisplaySuspender ds;
 				_session->set_controls (route_list_to_control_list (rl, &Stripable::solo_isolate_control), view ? 0.0 : 1.0, Controllable::NoGroup);
 			}
 		}
@@ -1571,7 +1563,7 @@ void
 RouteUI::choose_color ()
 {
 	bool picked;
-	Gdk::Color c (gdk_color_from_rgb (_route->presentation_info().color()));
+	Gdk::Color c (gdk_color_from_rgba (_route->presentation_info().color()));
 	Gdk::Color const color = Gtkmm2ext::UI::instance()->get_color (_("Color Selection"), picked, &c);
 
 	if (picked) {
@@ -2330,6 +2322,97 @@ RouteUI::manage_pins ()
 	if (proxy) {
 		proxy->get (true);
 		proxy->present();
+	}
+}
+
+void
+RouteUI::fan_out (bool to_busses, bool group)
+{
+	DisplaySuspender ds;
+	boost::shared_ptr<ARDOUR::Route> route = _route;
+	boost::shared_ptr<PluginInsert> pi = boost::dynamic_pointer_cast<PluginInsert> (route->the_instrument ());
+	assert (pi);
+
+	const uint32_t n_outputs = pi->output_streams ().n_audio ();
+	if (route->n_outputs ().n_audio () != n_outputs) {
+		MessageDialog msg (string_compose (
+					_("The Plugin's number of audio outputs ports (%1) does not match the Tracks's number of audio outputs (%2). Cannot fan out."),
+					n_outputs, route->n_outputs ().n_audio ()));
+		msg.run ();
+		return;
+	}
+
+#define BUSNAME  pd.group_name + "(" + route->name () + ")"
+
+	/* count busses and channels/bus */
+	boost::shared_ptr<Plugin> plugin = pi->plugin ();
+	std::map<std::string, uint32_t> busnames;
+	for (uint32_t p = 0; p < n_outputs; ++p) {
+		const Plugin::IOPortDescription& pd (plugin->describe_io_port (DataType::AUDIO, false, p));
+		std::string bn = BUSNAME;
+		busnames[bn]++;
+	}
+
+	if (busnames.size () < 2) {
+		MessageDialog msg (_("Instrument has only 1 output bus. Nothing to fan out."));
+		msg.run ();
+		return;
+	}
+
+	uint32_t outputs = 2;
+	if (_session->master_out ()) {
+		outputs = std::max (outputs, _session->master_out ()->n_inputs ().n_audio ());
+	}
+
+	route->output ()->disconnect (this);
+	route->panner_shell ()->set_bypassed (true);
+
+	RouteList to_group;
+	for (uint32_t p = 0; p < n_outputs; ++p) {
+		const Plugin::IOPortDescription& pd (plugin->describe_io_port (DataType::AUDIO, false, p));
+		std::string bn = BUSNAME;
+		boost::shared_ptr<Route> r = _session->route_by_name (bn);
+		if (!r) {
+			if (to_busses) {
+				RouteList rl = _session->new_audio_route (busnames[bn], outputs, NULL, 1, bn, PresentationInfo::AudioBus, PresentationInfo::max_order);
+				r = rl.front ();
+				assert (r);
+			} else {
+				list<boost::shared_ptr<AudioTrack> > tl =
+					_session->new_audio_track (busnames[bn], outputs, NULL, 1, bn, PresentationInfo::max_order, Normal);
+				r = tl.front ();
+				assert (r);
+
+				boost::shared_ptr<ControlList> cl (new ControlList);
+				cl->push_back (r->monitoring_control ());
+				_session->set_controls (cl, (double) MonitorInput, Controllable::NoGroup);
+			}
+			r->input ()->disconnect (this);
+		}
+		to_group.push_back (r);
+		route->output ()->audio (p)->connect (r->input ()->audio (pd.group_channel).get());
+	}
+#undef BUSNAME
+
+	if (group) {
+		RouteGroup* rg = NULL;
+		const std::list<RouteGroup*>& rgs (_session->route_groups ());
+		for (std::list<RouteGroup*>::const_iterator i = rgs.begin (); i != rgs.end (); ++i) {
+			if ((*i)->name () == pi->name ()) {
+				rg = *i;
+				break;
+			}
+		}
+		if (!rg) {
+			rg = new RouteGroup (*_session, pi->name ());
+			_session->add_route_group (rg);
+			rg->set_gain (false);
+		}
+
+		GroupTabs::set_group_color (rg, route->presentation_info().color());
+		for (RouteList::const_iterator i = to_group.begin(); i != to_group.end(); ++i) {
+			rg->add (*i);
+		}
 	}
 }
 

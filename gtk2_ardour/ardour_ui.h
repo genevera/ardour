@@ -76,6 +76,8 @@
 #include "ardour_window.h"
 #include "editing.h"
 #include "enums.h"
+#include "mini_timeline.h"
+#include "shuttle_control.h"
 #include "visibility_group.h"
 #include "window_manager.h"
 
@@ -91,6 +93,7 @@
 #include "location_ui.h"
 #include "lua_script_manager.h"
 #include "rc_option_editor.h"
+#include "route_dialogs.h"
 #include "route_params_ui.h"
 #include "session_option_editor.h"
 #include "speaker_dialog.h"
@@ -98,6 +101,7 @@
 class About;
 class AddRouteDialog;
 class AddVideoDialog;
+class ArdourVSpacer;
 class BigClockWindow;
 class BundleManager;
 class EngineControl;
@@ -125,7 +129,6 @@ class PublicEditor;
 class SaveAsDialog;
 class SessionDialog;
 class SessionOptionEditorWindow;
-class ShuttleControl;
 class Splash;
 class TimeInfoBox;
 class Meterbridge;
@@ -218,6 +221,8 @@ public:
 	void toggle_monitor_section_visibility ();
 	void toggle_keep_tearoffs();
 
+	void reset_focus (Gtk::Widget*);
+
 	static PublicEditor* _instance;
 
 	/** Emitted frequently with the audible frame, false, and the edit point as
@@ -250,8 +255,6 @@ public:
 	MainClock* secondary_clock;
 	void focus_on_clock ();
 	AudioClock*   big_clock;
-
-	TimeInfoBox* time_info_box;
 
 	VideoTimeLine *video_timeline;
 
@@ -376,6 +379,8 @@ public:
 
 	Gtkmm2ext::ActionMap global_actions;
 
+	ARDOUR::PresentationInfo::order_t translate_order (RouteDialogs::InsertAt);
+
 protected:
 	friend class PublicEditor;
 
@@ -427,6 +432,8 @@ private:
 	void setup_transport ();
 	void setup_clock ();
 
+	bool transport_expose (GdkEventExpose*);
+
 	static ARDOUR_UI *theArdourUI;
 	SessionDialog *_session_dialog;
 
@@ -468,19 +475,13 @@ private:
 
 	/* Transport Control */
 
+	Gtk::Table               transport_table;
 	Gtk::Frame               transport_frame;
 	Gtk::HBox                transport_hbox;
-	Gtk::Fixed               transport_base;
-	Gtk::Fixed               transport_button_base;
-	Gtk::Frame               transport_button_frame;
-	Gtk::HBox                transport_button_hbox;
-	Gtk::VBox                transport_button_vbox;
-	Gtk::HBox                transport_option_button_hbox;
-	Gtk::VBox                transport_option_button_vbox;
-	Gtk::HBox                transport_clock_hbox;
-	Gtk::VBox                transport_clock_vbox;
-	Gtk::HBox                primary_clock_hbox;
-	Gtk::HBox                secondary_clock_hbox;
+
+	ArdourVSpacer *secondary_clock_spacer;
+	void repack_transport_hbox ();
+	void update_clock_visibility ();
 
 	struct TransportControllable : public PBD::Controllable {
 	    enum ToggleType {
@@ -521,12 +522,20 @@ private:
 	ArdourButton auto_loop_button;
 	ArdourButton play_selection_button;
 	ArdourButton rec_button;
+	ArdourButton punch_in_button;
+	ArdourButton punch_out_button;
+	ArdourButton layered_button;
+
+	Gtk::Label   punch_label;
+	Gtk::Label   layered_label;
 
 	void toggle_external_sync ();
 	void toggle_time_master ();
 	void toggle_video_sync ();
 
-	ShuttleControl* shuttle_box;
+	ShuttleControl shuttle_box;
+	MiniTimeline   mini_timeline;
+	TimeInfoBox   *time_info_box;
 
 	ArdourButton auto_return_button;
 	ArdourButton follow_edits_button;
@@ -566,9 +575,10 @@ private:
 	void _auditioning_changed (bool);
 
 	bool solo_alert_press (GdkEventButton* ev);
-	bool audition_alert_press (GdkEventButton* ev);
-	bool feedback_alert_press (GdkEventButton *);
+	void audition_alert_clicked ();
 	bool error_alert_press (GdkEventButton *);
+
+	void layered_button_clicked ();
 
 	void big_clock_value_changed ();
 	void primary_clock_value_changed ();
@@ -679,8 +689,8 @@ private:
 
 	bool save_as_progress_update (float fraction, int64_t cnt, int64_t total, Gtk::Label* label, Gtk::ProgressBar* bar);
 	void save_session_as ();
+	void archive_session ();
 	void rename_session ();
-	ARDOUR::PresentationInfo::order_t translate_order (AddRouteDialog::InsertAt);
 
 	int         create_mixer ();
 	int         create_editor ();
@@ -828,6 +838,7 @@ private:
 	int ambiguous_file (std::string file, std::vector<std::string> hits);
 
 	bool click_button_clicked (GdkEventButton *);
+	bool sync_button_clicked (GdkEventButton *);
 
 	VisibilityGroup _status_bar_visibility;
 
@@ -887,6 +898,7 @@ private:
 	void step_down_through_tabs ();
 
 	void escape ();
+	void close_current_dialog ();
 	void pre_release_dialog ();
 };
 

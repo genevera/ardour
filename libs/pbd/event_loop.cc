@@ -60,7 +60,7 @@ EventLoop::set_event_loop_for_thread (EventLoop* loop)
 void*
 EventLoop::invalidate_request (void* data)
 {
-        InvalidationRecord* ir = (InvalidationRecord*) data;
+	InvalidationRecord* ir = (InvalidationRecord*) data;
 
 	/* Some of the requests queued with an EventLoop may involve functors
 	 * that make method calls to objects whose lifetime is shorter
@@ -86,16 +86,14 @@ EventLoop::invalidate_request (void* data)
 	 * inherit (indirectly) from sigc::trackable.
 	 */
 
-        if (ir->event_loop) {
+	if (ir->event_loop) {
+		DEBUG_TRACE (PBD::DEBUG::AbstractUI, string_compose ("%1: EventLoop::invalidate_request %2\n", ir->event_loop, ir));
 		Glib::Threads::Mutex::Lock lm (ir->event_loop->slot_invalidation_mutex());
-		for (list<BaseRequestObject*>::iterator i = ir->requests.begin(); i != ir->requests.end(); ++i) {
-			(*i)->valid = false;
-			(*i)->invalidation = 0;
-		}
-		delete ir;
-        }
+		ir->invalidate ();
+		ir->event_loop->trash.push_back(ir);
+	}
 
-        return 0;
+	return 0;
 }
 
 vector<EventLoop::ThreadBufferMapping>

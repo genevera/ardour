@@ -278,7 +278,9 @@ struct smf_track_struct {
 
 	int        track_number;
 	size_t     number_of_events;
-
+	/* this will be set from the SMF file if present, during loading */
+	char*      name;
+	char*      instrument;
 	/** These are private fields using only by loading and saving routines. */
 	void      *file_buffer;
 	size_t     file_buffer_length;
@@ -402,6 +404,7 @@ int smf_save(smf_t *smf, FILE *file) WARN_UNUSED_RESULT;
 /* Routines for manipulating smf_tempo_t. */
 smf_tempo_t *smf_get_tempo_by_pulses(const smf_t *smf, size_t pulses) WARN_UNUSED_RESULT;
 smf_tempo_t *smf_get_tempo_by_seconds(const smf_t *smf, double seconds) WARN_UNUSED_RESULT;
+int          smf_get_tempo_count (const smf_t *smf) WARN_UNUSED_RESULT;
 smf_tempo_t *smf_get_tempo_by_number(const smf_t *smf, size_t number) WARN_UNUSED_RESULT;
 smf_tempo_t *smf_get_last_tempo(const smf_t *smf) WARN_UNUSED_RESULT;
 

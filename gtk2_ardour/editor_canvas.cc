@@ -51,6 +51,7 @@
 #include "keyboard.h"
 #include "editor_cursors.h"
 #include "mouse_cursors.h"
+#include "note_base.h"
 #include "ui_config.h"
 #include "verbose_cursor.h"
 
@@ -410,10 +411,11 @@ Editor::drop_paths_part_two (const vector<string>& paths, framepos_t frame, doub
 
 		frame = 0;
 		InstrumentSelector is; // instantiation builds instrument-list and sets default.
-		do_import (midi_paths, Editing::ImportDistinctFiles, ImportAsTrack, SrcBest, frame, is.selected_instrument());
+		do_import (midi_paths, Editing::ImportDistinctFiles, ImportAsTrack, SrcBest, SMFTrackName, SMFTempoIgnore, frame, is.selected_instrument());
 
 		if (UIConfiguration::instance().get_only_copy_imported_files() || copy) {
-			do_import (audio_paths, Editing::ImportDistinctFiles, Editing::ImportAsTrack, SrcBest, frame);
+			do_import (audio_paths, Editing::ImportDistinctFiles, Editing::ImportAsTrack, 
+			           SrcBest, SMFTrackName, SMFTempoIgnore, frame);
 		} else {
 			do_embed (audio_paths, Editing::ImportDistinctFiles, ImportAsTrack, frame);
 		}
@@ -426,10 +428,12 @@ Editor::drop_paths_part_two (const vector<string>& paths, framepos_t frame, doub
 			/* select the track, then embed/import */
 			selection->set (tv);
 
-			do_import (midi_paths, Editing::ImportSerializeFiles, ImportToTrack, SrcBest, frame);
+			do_import (midi_paths, Editing::ImportSerializeFiles, ImportToTrack,
+			           SrcBest, SMFTrackName, SMFTempoIgnore, frame);
 
 			if (UIConfiguration::instance().get_only_copy_imported_files() || copy) {
-				do_import (audio_paths, Editing::ImportSerializeFiles, Editing::ImportToTrack, SrcBest, frame);
+				do_import (audio_paths, Editing::ImportSerializeFiles, Editing::ImportToTrack,
+				           SrcBest, SMFTrackName, SMFTempoIgnore, frame);
 			} else {
 				do_embed (audio_paths, Editing::ImportSerializeFiles, ImportToTrack, frame);
 			}
@@ -942,6 +946,8 @@ Editor::color_handler()
 	location_punch_color = UIConfiguration::instance().color ("location punch");
 
 	refresh_location_display ();
+
+	NoteBase::set_colors ();
 
 	/* redraw the whole thing */
 	_track_canvas->set_background_color (UIConfiguration::instance().color ("arrange base"));

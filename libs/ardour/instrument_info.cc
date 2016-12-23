@@ -124,8 +124,11 @@ string
 InstrumentInfo::get_controller_name (Evoral::Parameter param) const
 {
 	boost::shared_ptr<Processor> p = internal_instrument.lock();
-	if (p || param.type() != MidiCCAutomation) {
+	if (param.type() != MidiCCAutomation) {
 		return "";
+	}
+	if (p) {
+		return get_plugin_controller_name (p, param);
 	}
 
 	boost::shared_ptr<MIDI::Name::MasterDeviceNames> dev_names(
@@ -147,8 +150,13 @@ InstrumentInfo::get_controller_name (Evoral::Parameter param) const
 	if (!control_names) {
 		return "";
 	}
+	boost::shared_ptr<const Control> c = control_names->control(param.id());
 
-	return control_names->control(param.id())->name();
+	if (c) {
+		return c->name();
+	}
+
+	return "";
 }
 
 boost::shared_ptr<MIDI::Name::ChannelNameSet>
@@ -226,6 +234,12 @@ InstrumentInfo::general_midi_patches()
 	}
 
 	return _gm_patches;
+}
+
+string
+InstrumentInfo::get_plugin_controller_name (boost::shared_ptr<ARDOUR::Processor>, Evoral::Parameter param) const
+{
+	return "";
 }
 
 string

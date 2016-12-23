@@ -178,9 +178,9 @@ RouteTimeAxisView::set_route (boost::shared_ptr<Route> rt)
 	playlist_button.set_name ("route button");
 	automation_button.set_name ("route button");
 
-	route_group_button.signal_button_release_event().connect (sigc::mem_fun(*this, &RouteTimeAxisView::route_group_click), false);
-	playlist_button.signal_clicked.connect (sigc::mem_fun(*this, &RouteTimeAxisView::playlist_click));
-	automation_button.signal_clicked.connect (sigc::mem_fun(*this, &RouteTimeAxisView::automation_click));
+	route_group_button.signal_button_press_event().connect (sigc::mem_fun(*this, &RouteTimeAxisView::route_group_click), false);
+	playlist_button.signal_button_press_event().connect (sigc::mem_fun(*this, &RouteTimeAxisView::playlist_click), false);
+	automation_button.signal_button_press_event().connect (sigc::mem_fun(*this, &RouteTimeAxisView::automation_click), false);
 
 	if (is_track()) {
 
@@ -379,7 +379,7 @@ RouteTimeAxisView::setup_processor_menu_and_curves ()
 	_route->foreach_processor (sigc::mem_fun (*this, &RouteTimeAxisView::add_existing_processor_automation_curves));
 }
 
-gint
+bool
 RouteTimeAxisView::route_group_click (GdkEventButton *ev)
 {
 	if (Keyboard::modifier_state_equals (ev->state, Keyboard::PrimaryModifier)) {
@@ -393,9 +393,15 @@ RouteTimeAxisView::route_group_click (GdkEventButton *ev)
 	r.push_back (route ());
 
 	route_group_menu->build (r);
-	route_group_menu->menu()->popup (ev->button, ev->time);
+	if (ev->button == 1) {
+		Gtkmm2ext::anchored_menu_popup(route_group_menu->menu(),
+		                               &route_group_button,
+		                               "", 1, ev->time);
+	} else {
+		route_group_menu->menu()->popup (ev->button, ev->time);
+	}
 
-	return false;
+	return true;
 }
 
 void
@@ -472,20 +478,32 @@ RouteTimeAxisView::take_name_changed (void *src)
 	}
 }
 
-void
-RouteTimeAxisView::playlist_click ()
+bool
+RouteTimeAxisView::playlist_click (GdkEventButton *ev)
 {
+	if (ev->button != 1) {
+		return true;
+	}
+
 	build_playlist_menu ();
 	conditionally_add_to_selection ();
-	playlist_action_menu->popup (1, gtk_get_current_event_time());
+	Gtkmm2ext::anchored_menu_popup(playlist_action_menu, &playlist_button,
+	                               "", 1, ev->time);
+	return true;
 }
 
-void
-RouteTimeAxisView::automation_click ()
+bool
+RouteTimeAxisView::automation_click (GdkEventButton *ev)
 {
+	if (ev->button != 1) {
+		return true;
+	}
+
 	conditionally_add_to_selection ();
 	build_automation_action_menu (false);
-	automation_action_menu->popup (1, gtk_get_current_event_time());
+	Gtkmm2ext::anchored_menu_popup(automation_action_menu, &automation_button,
+	                               "", 1, ev->time);
+	return true;
 }
 
 void
@@ -508,13 +526,13 @@ RouteTimeAxisView::build_automation_action_menu (bool for_selection)
 	automation_action_menu->set_name ("ArdourContextMenu");
 
 	items.push_back (MenuElem (_("Show All Automation"),
-				   sigc::bind (sigc::mem_fun (*this, &RouteTimeAxisView::show_all_automation), for_selection)));
+	                           sigc::bind (sigc::mem_fun (*this, &RouteTimeAxisView::show_all_automation), for_selection)));
 
 	items.push_back (MenuElem (_("Show Existing Automation"),
-				   sigc::bind (sigc::mem_fun (*this, &RouteTimeAxisView::show_existing_automation), for_selection)));
+	                           sigc::bind (sigc::mem_fun (*this, &RouteTimeAxisView::show_existing_automation), for_selection)));
 
 	items.push_back (MenuElem (_("Hide All Automation"),
-				   sigc::bind (sigc::mem_fun (*this, &RouteTimeAxisView::hide_all_automation), for_selection)));
+	                           sigc::bind (sigc::mem_fun (*this, &RouteTimeAxisView::hide_all_automation), for_selection)));
 
 	/* Attach the plugin submenu. It may have previously been used elsewhere,
 	   so it was detached above
@@ -559,7 +577,7 @@ RouteTimeAxisView::build_automation_action_menu (bool for_selection)
 		items.push_back (CheckMenuElem (_("Pan"), sigc::mem_fun (*this, &RouteTimeAxisView::update_pan_track_visibility)));
 		pan_automation_item = dynamic_cast<Gtk::CheckMenuItem*> (&items.back ());
 		pan_automation_item->set_active ((!for_selection || _editor.get_selection().tracks.size() == 1) &&
-						 (!pan_tracks.empty() && string_is_affirmative (pan_tracks.front()->gui_property ("visible"))));
+		                                 (!pan_tracks.empty() && string_is_affirmative (pan_tracks.front()->gui_property ("visible"))));
 
 		set<Evoral::Parameter> const & params = _route->pannable()->what_can_be_automated ();
 		for (set<Evoral::Parameter>::const_iterator p = params.begin(); p != params.end(); ++p) {
@@ -754,6 +772,7 @@ RouteTimeAxisView::build_display_menu ()
 			/* show nothing */
 		}
 
+#ifdef XXX_OLD_DESTRUCTIVE_API_XXX
 		Menu* mode_menu = manage (new Menu);
 		MenuList& mode_items = mode_menu->items ();
 		mode_menu->set_name ("ArdourContextMenu");
@@ -802,6 +821,7 @@ RouteTimeAxisView::build_display_menu ()
 		i->set_inconsistent (non_layered != 0 && (normal != 0 || tape != 0));
 
 		items.push_back (MenuElem (_("Record Mode"), *mode_menu));
+#endif
 
 		items.push_back (SeparatorElem());
 
@@ -831,6 +851,17 @@ RouteTimeAxisView::build_display_menu ()
 	items.push_back (MenuElem (_("Automation"), *automation_action_menu));
 
 	items.push_back (SeparatorElem());
+
+	if (is_midi_track()) {
+		Menu* midi_menu = manage (new Menu);
+		MenuList& midi_items = midi_menu->items();
+		midi_menu->set_name (X_("ArdourContextMenu"));
+
+		midi_items.push_back (MenuElem (_("Channel Management"), sigc::mem_fun (*this, &RouteTimeAxisView::toggle_channel_selector)));
+
+		items.push_back (MenuElem (_("MIDI"), *midi_menu));
+		items.push_back (SeparatorElem());
+	}
 
 	int active = 0;
 	int inactive = 0;
@@ -870,6 +901,7 @@ RouteTimeAxisView::build_display_menu ()
 	items.push_back (MenuElem (_("Remove"), sigc::mem_fun(_editor, &PublicEditor::remove_tracks)));
 }
 
+#ifdef XXX_OLD_DESTRUCTIVE_API_XXX
 void
 RouteTimeAxisView::set_track_mode (TrackMode mode, bool apply_to_selection)
 {
@@ -893,6 +925,7 @@ RouteTimeAxisView::set_track_mode (TrackMode mode, bool apply_to_selection)
 		track()->set_mode (mode);
 	}
 }
+#endif
 
 void
 RouteTimeAxisView::show_timestretch (framepos_t start, framepos_t end, int layers, int layer)
@@ -1106,20 +1139,25 @@ RouteTimeAxisView::rename_current_playlist ()
 
 	prompter.set_title (_("Rename Playlist"));
 	prompter.set_prompt (_("New name for playlist:"));
-	prompter.set_initial_text (pl->name());
 	prompter.add_button (_("Rename"), Gtk::RESPONSE_ACCEPT);
+	prompter.set_initial_text (pl->name());
 	prompter.set_response_sensitive (Gtk::RESPONSE_ACCEPT, false);
 
-	switch (prompter.run ()) {
-	case Gtk::RESPONSE_ACCEPT:
+	while (true) {
+		if (prompter.run () != Gtk::RESPONSE_ACCEPT) {
+			break;
+		}
 		prompter.get_result (name);
 		if (name.length()) {
-			pl->set_name (name);
+			if (_session->playlists->by_name (name)) {
+				MessageDialog msg (_("Given playlist name is not unique."));
+				msg.run ();
+				prompter.set_initial_text (Playlist::bump_name (name, *_session));
+			} else {
+				pl->set_name (name);
+				break;
+			}
 		}
-		break;
-
-	default:
-		break;
 	}
 }
 
@@ -1159,62 +1197,7 @@ RouteTimeAxisView::resolve_new_group_playlist_name(std::string &basename, vector
 }
 
 void
-RouteTimeAxisView::use_copy_playlist (bool prompt, vector<boost::shared_ptr<Playlist> > const & playlists_before_op)
-{
-	string name;
-
-	boost::shared_ptr<Track> tr = track ();
-	if (!tr || tr->destructive()) {
-		return;
-	}
-
-	boost::shared_ptr<const Playlist> pl = tr->playlist();
-	if (!pl) {
-		return;
-	}
-
-	name = pl->name();
-
-	if (route_group() && route_group()->is_active() && route_group()->enabled_property (ARDOUR::Properties::group_select.property_id)) {
-		name = resolve_new_group_playlist_name(name, playlists_before_op);
-	}
-
-	while (_session->playlists->by_name(name)) {
-		name = Playlist::bump_name (name, *_session);
-	}
-
-	// TODO: The prompter "new" button should be de-activated if the user
-	// specifies a playlist name which already exists in the session.
-
-	if (prompt) {
-
-		ArdourPrompter prompter (true);
-
-		prompter.set_title (_("New Copy Playlist"));
-		prompter.set_prompt (_("Name for new playlist:"));
-		prompter.set_initial_text (name);
-		prompter.add_button (Gtk::Stock::NEW, Gtk::RESPONSE_ACCEPT);
-		prompter.set_response_sensitive (Gtk::RESPONSE_ACCEPT, true);
-		prompter.show_all ();
-
-		switch (prompter.run ()) {
-		case Gtk::RESPONSE_ACCEPT:
-			prompter.get_result (name);
-			break;
-
-		default:
-			return;
-		}
-	}
-
-	if (name.length()) {
-		tr->use_copy_playlist ();
-		tr->playlist()->set_name (name);
-	}
-}
-
-void
-RouteTimeAxisView::use_new_playlist (bool prompt, vector<boost::shared_ptr<Playlist> > const & playlists_before_op)
+RouteTimeAxisView::use_new_playlist (bool prompt, vector<boost::shared_ptr<Playlist> > const & playlists_before_op, bool copy)
 {
 	string name;
 
@@ -1238,29 +1221,47 @@ RouteTimeAxisView::use_new_playlist (bool prompt, vector<boost::shared_ptr<Playl
 		name = Playlist::bump_name (name, *_session);
 	}
 
-
 	if (prompt) {
+		// TODO: The prompter "new" button should be de-activated if the user
+		// specifies a playlist name which already exists in the session.
 
 		ArdourPrompter prompter (true);
 
-		prompter.set_title (_("New Playlist"));
-		prompter.set_prompt (_("Name for new playlist:"));
+		if (copy) {
+			prompter.set_title (_("New Copy Playlist"));
+			prompter.set_prompt (_("Name for playlist copy:"));
+		} else {
+			prompter.set_title (_("New Playlist"));
+			prompter.set_prompt (_("Name for new playlist:"));
+		}
 		prompter.set_initial_text (name);
 		prompter.add_button (Gtk::Stock::NEW, Gtk::RESPONSE_ACCEPT);
 		prompter.set_response_sensitive (Gtk::RESPONSE_ACCEPT, true);
+		prompter.show_all ();
 
-		switch (prompter.run ()) {
-		case Gtk::RESPONSE_ACCEPT:
+		while (true) {
+			if (prompter.run () != Gtk::RESPONSE_ACCEPT) {
+				return;
+			}
 			prompter.get_result (name);
-			break;
-
-		default:
-			return;
+			if (name.length()) {
+				if (_session->playlists->by_name (name)) {
+					MessageDialog msg (_("Given playlist name is not unique."));
+					msg.run ();
+					prompter.set_initial_text (Playlist::bump_name (name, *_session));
+				} else {
+					break;
+				}
+			}
 		}
 	}
 
 	if (name.length()) {
-		tr->use_new_playlist ();
+		if (copy) {
+			tr->use_copy_playlist ();
+		} else {
+			tr->use_new_playlist ();
+		}
 		tr->playlist()->set_name (name);
 	}
 }
@@ -1430,7 +1431,7 @@ RouteTimeAxisView::name_entry_changed (string const& str)
 	}
 
 	string x = str;
-	
+
 	strip_whitespace_edges (x);
 
 	if (x.empty()) {
@@ -2938,4 +2939,3 @@ RouteTimeAxisView::set_marked_for_display (bool yn)
 {
 	return RouteUI::mark_hidden (!yn);
 }
-

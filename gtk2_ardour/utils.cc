@@ -276,7 +276,7 @@ Gdk::Color
 ARDOUR_UI_UTILS::gdk_color_from_rgba (uint32_t rgba)
 {
 	Gdk::Color c;
-	set_color_from_rgb (c, rgba);
+	set_color_from_rgb (c, rgba >> 8);
 	return c;
 }
 
@@ -403,7 +403,12 @@ ARDOUR_UI_UTILS::get_color_themes (map<std::string,std::string>& themes)
 				continue;
 			}
 
-			themes.insert (make_pair (prop->value(), Glib::filename_to_utf8 (basename_nosuffix(*e))));
+			std::string color_name = basename_nosuffix(*e);
+			size_t sep = color_name.find_first_of("-");
+			if (sep != string::npos) {
+				color_name = color_name.substr (0, sep);
+			}
+			themes.insert (make_pair (prop->value(), color_name));
 		}
 	}
 }

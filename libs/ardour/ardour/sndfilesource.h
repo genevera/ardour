@@ -24,6 +24,7 @@
 
 #include "ardour/audiofilesource.h"
 #include "ardour/broadcast_info.h"
+#include "ardour/progress.h"
 
 namespace ARDOUR {
 
@@ -49,6 +50,9 @@ class LIBARDOUR_API SndFileSource : public AudioFileSource {
 	 */
 	SndFileSource (Session&, const XMLNode&);
 
+	/** Constructor to losslessly compress existing source */
+	SndFileSource (Session& s, const AudioFileSource& other, const std::string& path, bool use16bits = false, Progress* p = NULL);
+
 	~SndFileSource ();
 
 	float sample_rate () const;
@@ -63,7 +67,9 @@ class LIBARDOUR_API SndFileSource : public AudioFileSource {
 	void mark_capture_end ();
 	void clear_capture_marks();
 
+#ifdef XXX_OLD_DESTRUCTIVE_API_XXX
 	bool set_destructive (bool yn);
+#endif
 
 	bool one_of_several_channels () const;
     uint32_t channel_count () const { return _info.channels; }

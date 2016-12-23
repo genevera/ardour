@@ -78,8 +78,9 @@ class ArdourButton : public CairoWidget , public Gtkmm2ext::Activatable
 
 	void set_corner_radius (float);
 
-	void set_text (const std::string&);
-	const std::string& get_text () {return _text;}
+	void set_text (const std::string&, bool markup = false);
+	const std::string& get_text () { return _text; }
+	bool get_markup () const { return _markup; }
 	void set_angle (const double);
 	void set_alignment (const float, const float);
 	void get_alignment (float& xa, float& ya) {xa = _xalign; ya = _yalign;};
@@ -90,6 +91,12 @@ class ArdourButton : public CairoWidget , public Gtkmm2ext::Activatable
 	void set_layout_ellipsize_width (int w);
 	void set_layout_font (const Pango::FontDescription&);
 	void set_text_ellipsize (Pango::EllipsizeMode);
+
+    /* Sets the text used for size request computation. Pass an
+     * empty string to return to the default behavior which uses
+     * the currently displayed text for measurement. */
+	void set_sizing_text (const std::string&);
+	const std::string& get_sizing_text () {return _sizing_text;}
 
 	sigc::signal<void, GdkEventButton*> signal_led_clicked;
 	sigc::signal<void> signal_clicked;
@@ -124,6 +131,7 @@ class ArdourButton : public CairoWidget , public Gtkmm2ext::Activatable
 	void on_realize ();
 	bool on_enter_notify_event (GdkEventCrossing*);
 	bool on_leave_notify_event (GdkEventCrossing*);
+	bool on_grab_broken_event(GdkEventGrabBroken*);
 	bool on_focus_in_event (GdkEventFocus*);
 	bool on_focus_out_event (GdkEventFocus*);
 	bool on_key_release_event (GdkEventKey *);
@@ -135,11 +143,14 @@ class ArdourButton : public CairoWidget , public Gtkmm2ext::Activatable
 	Glib::RefPtr<Pango::Layout> _layout;
 	Glib::RefPtr<Gdk::Pixbuf>   _pixbuf;
 	std::string                 _text;
+	std::string                 _sizing_text;
+	bool                        _markup;
 	Element                     _elements;
 	Gtkmm2ext::ArdourIcon::Icon _icon;
 	Tweaks                      _tweaks;
 	BindingProxy                binding_proxy;
 
+	void set_text_internal ();
 	void recalc_char_pixel_geometry ();
 	unsigned int _char_pixel_width;
 	unsigned int _char_pixel_height;

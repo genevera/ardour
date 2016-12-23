@@ -160,18 +160,6 @@ void
 UIConfiguration::reset_dpi ()
 {
 	long val = get_font_scale();
-	set_pango_fontsize ();
-	/* Xft rendering */
-
-	gtk_settings_set_long_property (gtk_settings_get_default(),
-					"gtk-xft-dpi", val, "ardour");
-	DPIReset(); //Emit Signal
-}
-
-void
-UIConfiguration::set_pango_fontsize ()
-{
-	long val = get_font_scale();
 
 	/* FT2 rendering - used by GnomeCanvas, sigh */
 
@@ -182,6 +170,12 @@ UIConfiguration::set_pango_fontsize ()
 	/* Cairo rendering, in case there is any */
 
 	pango_cairo_font_map_set_resolution ((PangoCairoFontMap*) pango_cairo_font_map_get_default(), val/1024);
+
+	/* Xft rendering */
+
+	gtk_settings_set_long_property (gtk_settings_get_default(),
+					"gtk-xft-dpi", val, "ardour");
+	DPIReset(); //Emit Signal
 }
 
 float
@@ -266,8 +260,15 @@ UIConfiguration::color_file_name (bool use_my, bool with_version) const
 		basename += "my-";
 	}
 
-	//this is the overall theme file, e.g. "dark" plus "-downcase(PROGRAM_NAME)"
-	basename += color_file.get();  
+	std::string color_name = color_file.get();
+	size_t sep = color_name.find_first_of("-");
+	if (sep != string::npos) {
+		color_name = color_name.substr (0, sep);
+	}
+
+	basename += color_name;
+	basename += "-";
+	basename += downcase(PROGRAM_NAME);
 
 	std::string rev (revision);
 	std::size_t pos = rev.find_first_of("-");

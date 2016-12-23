@@ -310,11 +310,10 @@ Gtkmm2ext::pixbuf_from_string(const string& name, const Pango::FontDescription& 
 }
 
 void
-Gtkmm2ext::position_menu_anchored (const Gtk::Menu* const menu,
+_position_menu_anchored (int& x, int& y, bool& push_in,
+                                   const Gtk::Menu* const menu,
                                    Gtk::Widget* const anchor,
-                                   const std::string& selected,
-                                   int& x, int& y, bool& push_in) {
-	using namespace Gdk;
+                                   const std::string& selected) {
 	using namespace Gtk;
 	using namespace Gtk::Menu_Helpers;
 
@@ -324,7 +323,7 @@ Gtkmm2ext::position_menu_anchored (const Gtk::Menu* const menu,
 		return;
 	}
 
-	Rectangle monitor;
+	Gdk::Rectangle monitor;
 	{
 		const int monitor_num = anchor->get_screen ()->get_monitor_at_window (
 				anchor->get_window ());
@@ -333,7 +332,7 @@ Gtkmm2ext::position_menu_anchored (const Gtk::Menu* const menu,
 	}
 
 	const Requisition menu_req = menu->size_request();
-	const Rectangle allocation = anchor->get_allocation();
+	const Gdk::Rectangle allocation = anchor->get_allocation();
 
 	/* The x and y position are handled separately.
 	 *
@@ -396,7 +395,8 @@ Gtkmm2ext::position_menu_anchored (const Gtk::Menu* const menu,
 
 	MenuList::const_iterator i = items.begin();
 	for ( ; i != items.end(); ++i) {
-		if (selected == ((std::string) i->get_label())) {
+		const Label* label_widget = dynamic_cast<const Label*>(i->get_child());
+		if (label_widget && selected == ((std::string) label_widget->get_label())) {
 			break;
 		}
 		offset += i->size_request().height;
@@ -414,6 +414,18 @@ Gtkmm2ext::position_menu_anchored (const Gtk::Menu* const menu,
 	}
 
 	push_in = false;
+}
+
+void
+Gtkmm2ext::anchored_menu_popup (Gtk::Menu* const menu,
+                                Gtk::Widget* const anchor,
+                                const std::string& selected,
+                                guint button, guint32 time) {
+	menu->popup(
+		sigc::bind (sigc::ptr_fun(&_position_menu_anchored),
+		            menu, anchor, selected),
+		button,
+		time);
 }
 
 void

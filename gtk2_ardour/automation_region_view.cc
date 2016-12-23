@@ -52,6 +52,8 @@ AutomationRegionView::AutomationRegionView (ArdourCanvas::Container*            
 	, _source_relative_time_converter(region->session().tempo_map(), region->position() - region->start())
 	, _parameter(param)
 {
+	TimeAxisViewItem::set_position (_region->position(), this);
+
 	if (list) {
 		assert(list->parameter() == param);
 		create_line(list);
@@ -66,6 +68,7 @@ AutomationRegionView::AutomationRegionView (ArdourCanvas::Container*            
 
 AutomationRegionView::~AutomationRegionView ()
 {
+	in_destructor = true;
 	RegionViewGoingAway (this); /* EMIT_SIGNAL */
 }
 

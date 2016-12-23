@@ -67,6 +67,10 @@ namespace Gtkmm2ext {
 	class Bindings;
 }
 
+namespace Evoral {
+	class SMF;
+}
+
 namespace ARDOUR {
 	class AudioPlaylist;
 	class AudioRegion;
@@ -130,6 +134,7 @@ class SoundFileOmega;
 class StreamView;
 class TempoLines;
 class TimeAxisView;
+class TimeInfoBox;
 class TimeFXDialog;
 class TimeSelection;
 class RegionLayeringOrderEditor;
@@ -297,8 +302,10 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	Editing::ZoomFocus get_zoom_focus () const { return zoom_focus; }
 	framecnt_t         get_current_zoom () const { return samples_per_pixel; }
 	void               cycle_zoom_focus ();
-	void temporal_zoom_step (bool coarser);
-	void temporal_zoom_step_mouse_focus (bool coarser);
+	void temporal_zoom_step (bool zoom_out);
+	void temporal_zoom_step_scale (bool zoom_out, double scale);
+	void temporal_zoom_step_mouse_focus (bool zoom_out);
+	void temporal_zoom_step_mouse_focus_scale (bool zoom_out, double scale);
 	void ensure_time_axis_view_is_visible (TimeAxisView const & tav, bool at_top);
 	void tav_zoom_step (bool coarser);
 	void tav_zoom_smooth (bool coarser, bool force_all);
@@ -330,7 +337,7 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	unsigned get_grid_beat_divisions(framepos_t position);
 	Evoral::Beats get_grid_type_as_beats (bool& success, framepos_t position);
 
-	unsigned get_grid_music_divisions (uint32_t event_state);
+	int32_t get_grid_music_divisions (uint32_t event_state);
 
 	void nudge_forward (bool next, bool force_playhead);
 	void nudge_backward (bool next, bool force_playhead);
@@ -426,6 +433,8 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	                Editing::ImportDisposition            disposition,
 	                Editing::ImportMode                   mode,
 	                ARDOUR::SrcQuality                    quality,
+	                ARDOUR::MidiTrackNameSource           mts,
+	                ARDOUR::MidiTempoMapDisposition       mtd,
 	                framepos_t&                           pos,
 	                boost::shared_ptr<ARDOUR::PluginInfo> instrument = boost::shared_ptr<ARDOUR::PluginInfo>());
 
@@ -534,7 +543,7 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 
 	/* editing operations that need to be public */
 	void mouse_add_new_marker (framepos_t where, bool is_cd=false);
-	void split_regions_at (framepos_t, RegionSelection&, const int32_t sub_num);
+	void split_regions_at (framepos_t, RegionSelection&, const int32_t sub_num, bool snap = true);
 	void split_region_at_points (boost::shared_ptr<ARDOUR::Region>, ARDOUR::AnalysisFeatureList&, bool can_ferret, bool select_new = false);
 	RegionSelection get_regions_from_selection_and_mouse (framepos_t);
 
@@ -562,6 +571,8 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	boost::optional<framepos_t> _control_scroll_target;
 
 	PlaylistSelector* _playlist_selector;
+
+	TimeInfoBox*      _time_info_box;
 
 	typedef std::pair<TimeAxisView*,XMLNode*> TAVState;
 
@@ -615,6 +626,7 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 
 	boost::optional<float>  pre_notebook_shrink_pane_width;
 
+	Gtk::VBox _editor_list_vbox;
 	Gtk::Notebook _the_notebook;
 	bool _notebook_shrunk;
 	void add_notebook_page (std::string const &, Gtk::Widget &);
@@ -890,7 +902,7 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	void update_just_timecode ();
 	void compute_fixed_ruler_scale (); //calculates the RulerScale of the fixed rulers
 	void update_fixed_rulers ();
-	void update_tempo_based_rulers (std::vector<ARDOUR::TempoMap::BBTPoint>& grid);
+	void update_tempo_based_rulers ();
 	void popup_ruler_menu (framepos_t where = 0, ItemType type = RegionItem);
 	void update_ruler_visibility ();
 	void set_ruler_visible (RulerType, bool);
@@ -953,7 +965,7 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	gint bbt_nmarks;
 	uint32_t bbt_bar_helper_on;
 	uint32_t bbt_accent_modulo;
-	void compute_bbt_ruler_scale (std::vector<ARDOUR::TempoMap::BBTPoint>& grid, framepos_t lower, framepos_t upper);
+	void compute_bbt_ruler_scale (framepos_t lower, framepos_t upper);
 
 	ArdourCanvas::Ruler* timecode_ruler;
 	ArdourCanvas::Ruler* bbt_ruler;
@@ -1007,7 +1019,8 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 
 	friend class EditorCursor;
 
-	EditorCursor*        playhead_cursor;
+	EditorCursor* playhead_cursor;
+	framepos_t playhead_cursor_sample () const;
 
 	framepos_t get_region_boundary (framepos_t pos, int32_t dir, bool with_selection, bool only_onscreen);
 
@@ -1042,7 +1055,6 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 
 	Gtk::HBox           toplevel_hpacker;
 
-	Gtk::HBox           top_hbox;
 	Gtk::HBox           bottom_hbox;
 
 	Gtk::Table          edit_packer;
@@ -1276,8 +1288,6 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 
 	void naturalize_region ();
 
-	void reset_focus (Gtk::Widget*);
-
 	void split_region ();
 
 	void delete_ ();
@@ -1304,8 +1314,7 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	void loop_location (ARDOUR::Location&);
 
 	void calc_extra_zoom_edges(framepos_t &start, framepos_t &end);
-	void temporal_zoom_selection (bool both_axes = false);
-	void temporal_zoom_region (bool both_axes);
+	void temporal_zoom_selection (Editing::ZoomAxis);
 	void temporal_zoom_session ();
 	void temporal_zoom (framecnt_t samples_per_pixel);
 	void temporal_zoom_by_frame (framepos_t start, framepos_t end);
@@ -1412,7 +1421,7 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 
 	void import_audio (bool as_tracks);
 	void do_import (std::vector<std::string> paths, bool split, bool as_tracks);
-
+	void import_smf_tempo_map (Evoral::SMF const &);
 	void move_to_start ();
 	void move_to_end ();
 	void center_playhead ();
@@ -1451,6 +1460,7 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	void set_loop_from_selection (bool play);
 	void set_punch_from_selection ();
 	void set_punch_from_region ();
+	void set_auto_punch_range();
 
 	void set_session_start_from_playhead ();
 	void set_session_end_from_playhead ();
@@ -1461,7 +1471,9 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	void set_loop_range (framepos_t start, framepos_t end, std::string cmd);
 	void set_punch_range (framepos_t start, framepos_t end, std::string cmd);
 
+	void toggle_location_at_playhead_cursor ();
 	void add_location_from_playhead_cursor ();
+	bool do_remove_location_at_playhead_cursor ();
 	void remove_location_at_playhead_cursor ();
 	bool select_new_marker;
 
@@ -1653,6 +1665,10 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	void edit_meter_marker (MeterMarker&);
 	void edit_control_point (ArdourCanvas::Item*);
 	void edit_notes (MidiRegionView*);
+	void edit_region (RegionView*);
+
+	void edit_current_meter ();
+	void edit_current_tempo ();
 
 	void marker_menu_edit ();
 	void marker_menu_remove ();
@@ -1799,6 +1815,8 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 
 	Glib::RefPtr<Gtk::RadioAction> zoom_focus_action (Editing::ZoomFocus);
 
+	Gtk::HBox           _track_box;
+
 	Gtk::HBox           _zoom_box;
 	void                zoom_adjustment_changed();
 
@@ -1807,9 +1825,6 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	void setup_tooltips ();
 
 	Gtk::HBox                toolbar_hbox;
-	Gtk::EventBox            toolbar_base;
-	Gtk::Frame               toolbar_frame;
-	Gtk::Viewport           _toolbar_viewport;
 
 	void setup_midi_toolbar ();
 
@@ -1835,8 +1850,6 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	bool _last_region_menu_was_main;
 	void point_selection_changed ();
 	void marker_selection_changed ();
-
-	bool _ignore_follow_edits;
 
 	void cancel_selection ();
 	void cancel_time_selection ();
@@ -1999,6 +2012,7 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	/* duplication */
 
 	void duplicate_range (bool with_dialog);
+	void duplicate_regions (float times);
 
 	/** computes the timeline frame (sample) of an event whose coordinates
 	 * are in canvas units (pixels, scroll offset included).
@@ -2252,6 +2266,7 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	Gtkmm2ext::ActionMap myactions;
 
 	friend class Drag;
+	friend class RegionCutDrag;
 	friend class RegionDrag;
 	friend class RegionMoveDrag;
 	friend class RegionSpliceDrag;
@@ -2268,6 +2283,7 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	friend class ControlPointDrag;
 	friend class LineDrag;
 	friend class RubberbandSelectDrag;
+	friend class RulerZoomDrag;
 	friend class EditorRubberbandSelectDrag;
 	friend class TimeFXDrag;
 	friend class ScrubDrag;

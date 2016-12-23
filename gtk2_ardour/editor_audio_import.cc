@@ -262,10 +262,54 @@ Editor::get_nth_selected_midi_track (int nth) const
 }
 
 void
+Editor::import_smf_tempo_map (Evoral::SMF const & smf)
+{
+	if (!_session) {
+		return;
+	}
+
+	const size_t num_tempos = smf.num_tempos ();
+
+	if (num_tempos == 0) {
+		return;
+	}
+
+	const framecnt_t sample_rate = _session->frame_rate ();
+	TempoMap new_map (sample_rate);
+	bool have_meter = false;
+
+	for (size_t n = 0; n < num_tempos; ++n) {
+
+		Evoral::SMF::Tempo* t = smf.nth_tempo (n);
+		assert (t);
+
+		Tempo tempo (60 * (1000000 / t->microseconds_per_quarter_note), 4.0);
+		new_map.add_tempo (tempo, (t->time_pulses/smf.ppqn()) / 4.0, 0, TempoSection::Constant, MusicTime);
+
+		Meter meter (t->numerator, t->denominator);
+		Timecode::BBT_Time bbt; /* 1|1|0 which is correct for the no-meter case */
+		if (have_meter) {
+			bbt  = new_map.bbt_at_beat ((t->time_pulses/smf.ppqn()));
+		}
+		new_map.add_meter (meter, t->time_pulses, bbt, 0, MusicTime);
+
+		cerr << "@ " << t->time_pulses/smf.ppqn() << " ("
+		     << t->time_seconds << ") Add T " << tempo << " M " << meter << endl;
+	}
+
+	cerr << "NEW MAP:\n";
+	new_map.dump (cerr);
+
+	_session->tempo_map() = new_map;
+}
+
+void
 Editor::do_import (vector<string>        paths,
                    ImportDisposition     disposition,
                    ImportMode            mode,
                    SrcQuality            quality,
+                   MidiTrackNameSource   midi_track_name_source,
+                   MidiTempoMapDisposition smf_tempo_disposition,
                    framepos_t&           pos,
                    ARDOUR::PluginInfoPtr instrument)
 {
@@ -274,10 +318,30 @@ Editor::do_import (vector<string>        paths,
 	int nth = 0;
 	bool use_timestamp = (pos == -1);
 
+	if (smf_tempo_disposition == SMFTempoUse) {
+		/* Find the first MIDI file with a tempo map, and import it
+		   before we do anything else.
+		*/
+
+		for (vector<string>::iterator a = paths.begin(); a != paths.end(); ++a) {
+			Evoral::SMF smf;
+			if (smf.open (*a)) {
+				continue;
+			}
+			if (smf.num_tempos() > 0) {
+				import_smf_tempo_map (smf);
+				smf.close ();
+				break;
+			}
+			smf.close ();
+		}
+	}
+
 	current_interthread_info = &import_status;
 	import_status.current = 1;
 	import_status.total = paths.size ();
 	import_status.all_done = false;
+	import_status.midi_track_name_source = midi_track_name_source;
 
 	ImportProgressWindow ipw (&import_status, _("Import"), _("Cancel Import"));
 
@@ -484,6 +548,7 @@ Editor::import_sndfiles (vector<string>            paths,
 	import_status.freeze = false;
 	import_status.quality = quality;
 	import_status.replace_existing_source = replace;
+	import_status.split_midi_channels = (disposition == Editing::ImportDistinctChannels);
 
 	import_status.mode = mode;
 	import_status.pos = pos;
@@ -710,7 +775,7 @@ Editor::add_sources (vector<string>            paths,
 
 		if (use_timestamp && boost::dynamic_pointer_cast<AudioRegion>(r)) {
 			boost::dynamic_pointer_cast<AudioRegion>(r)->special_set_position(sources[0]->natural_position());
-     		}
+		}
 
 		regions.push_back (r);
 

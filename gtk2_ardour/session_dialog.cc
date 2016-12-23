@@ -41,6 +41,7 @@
 #include "pbd/openuri.h"
 
 #include "gtkmm2ext/utils.h"
+#include "gtkmm2ext/keyboard.h"
 
 #include "ardour/audioengine.h"
 #include "ardour/filesystem_paths.h"
@@ -87,6 +88,7 @@ SessionDialog::SessionDialog (bool require_new, const std::string& session_name,
 	open_button = add_button (Stock::OPEN, RESPONSE_ACCEPT);
 
 	back_button->signal_button_press_event().connect (sigc::mem_fun (*this, &SessionDialog::back_button_pressed), false);
+	open_button->signal_button_press_event().connect (sigc::mem_fun (*this, &SessionDialog::open_button_pressed), false);
 
 	open_button->set_sensitive (false);
 	back_button->set_sensitive (false);
@@ -322,6 +324,7 @@ SessionDialog::setup_recent_sessions ()
 
 	recent_session_display.show();
 	recent_session_display.signal_row_activated().connect (sigc::mem_fun (*this, &SessionDialog::recent_row_activated));
+	recent_session_display.signal_button_press_event().connect (sigc::mem_fun (*this, &SessionDialog::recent_button_press), false);
 }
 
 void
@@ -475,6 +478,16 @@ SessionDialog::back_button_pressed (GdkEventButton*)
 	back_button->set_sensitive (false);
 	get_vbox()->pack_start (ic_vbox);
 
+	return true;
+}
+
+bool
+SessionDialog::open_button_pressed (GdkEventButton* ev)
+{
+	if (Gtkmm2ext::Keyboard::modifier_state_equals (ev->state, Gtkmm2ext::Keyboard::PrimaryModifier)) {
+		_disable_plugins.set_active();
+	}
+	response (RESPONSE_ACCEPT);
 	return true;
 }
 
@@ -785,7 +798,7 @@ SessionDialog::redisplay_recent_sessions ()
 				if (gsb.st_mtime > most_recent) {
 					most_recent = gsb.st_mtime;
 				}
-
+#if 0
 				if (Session::get_info_from_path (s, sr, sf) == 0) {
 					child_row[recent_session_columns.sample_rate] = rate_as_string (sr);
 					switch (sf) {
@@ -803,6 +816,10 @@ SessionDialog::redisplay_recent_sessions ()
 					child_row[recent_session_columns.sample_rate] = "??";
 					child_row[recent_session_columns.disk_format] = "--";
 				}
+#else
+				child_row[recent_session_columns.sample_rate] = "";
+				child_row[recent_session_columns.disk_format] = "";
+#endif
 
 				++session_snapshot_count;
 			}
@@ -1164,6 +1181,65 @@ void
 SessionDialog::recent_row_activated (const Gtk::TreePath&, Gtk::TreeViewColumn*)
 {
 	response (RESPONSE_ACCEPT);
+}
+
+bool
+SessionDialog::recent_button_press (GdkEventButton* ev)
+{
+	if ((ev->type == GDK_BUTTON_PRESS) && (ev->button == 3) ) {
+
+		TreeModel::Path path;
+		TreeViewColumn* column;
+		int cellx, celly;
+		if (recent_session_display.get_path_at_pos ((int)ev->x, (int)ev->y, path, column, cellx, celly)) {
+			Glib::RefPtr<Gtk::TreeView::Selection> selection = recent_session_display.get_selection();
+			if (selection) {
+				selection->unselect_all();
+				selection->select(path);
+			}
+		}
+
+		if (recent_session_display.get_selection()->count_selected_rows() > 0) {
+			recent_context_mennu (ev);
+		}
+	}
+	return false;
+}
+
+void
+SessionDialog::recent_context_mennu (GdkEventButton *ev)
+{
+	using namespace Gtk::Menu_Helpers;
+
+	TreeIter iter = recent_session_display.get_selection()->get_selected();
+	assert (iter);
+	string s = (*iter)[recent_session_columns.fullpath];
+	if (Glib::file_test (s, Glib::FILE_TEST_IS_REGULAR)) {
+		s = Glib::path_get_dirname (s);
+	}
+	if (!Glib::file_test (s, Glib::FILE_TEST_IS_DIR)) {
+		return;
+	}
+
+	Gtk::Menu* m = manage (new Menu);
+	MenuList& items = m->items ();
+	items.push_back (MenuElem (s));
+	items.push_back (SeparatorElem());
+	items.push_back (MenuElem (_("Remove from recent"), sigc::mem_fun (*this, &SessionDialog::recent_remove_selected)));
+	m->popup (ev->button, ev->time);
+}
+
+void
+SessionDialog::recent_remove_selected ()
+{
+	TreeIter iter = recent_session_display.get_selection()->get_selected();
+	assert (iter);
+	string s = (*iter)[recent_session_columns.fullpath];
+	if (Glib::file_test (s, Glib::FILE_TEST_IS_REGULAR)) {
+		s = Glib::path_get_dirname (s);
+	}
+	ARDOUR::remove_recent_sessions (s);
+	redisplay_recent_sessions ();
 }
 
 void

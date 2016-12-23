@@ -58,7 +58,9 @@ ArdourButton::Element ArdourButton::led_default_elements = ArdourButton::Element
 ArdourButton::Element ArdourButton::just_led_default_elements = ArdourButton::Element (ArdourButton::Edge|ArdourButton::Body|ArdourButton::Indicator);
 
 ArdourButton::ArdourButton (Element e)
-	: _elements (e)
+	: _sizing_text("")
+	, _markup (false)
+	, _elements (e)
 	, _icon (Gtkmm2ext::ArdourIcon::NoIcon)
 	, _tweaks (Tweaks (0))
 	, _char_pixel_width (0)
@@ -67,7 +69,7 @@ ArdourButton::ArdourButton (Element e)
 	, _text_width (0)
 	, _text_height (0)
 	, _diameter (0)
-	, _corner_radius (2.5)
+	, _corner_radius (3.5)
 	, _corner_mask (0xf)
 	, _angle(0)
 	, _xalign(.5)
@@ -97,10 +99,15 @@ ArdourButton::ArdourButton (Element e)
 	, _pattern_height (0)
 {
 	UIConfiguration::instance().ColorsChanged.connect (sigc::mem_fun (*this, &ArdourButton::color_handler));
+	/* This is not provided by gtkmm */
+	signal_grab_broken_event().connect (sigc::mem_fun (*this, &ArdourButton::on_grab_broken_event));
 }
 
 ArdourButton::ArdourButton (const std::string& str, Element e)
-	: _elements (e)
+	: _sizing_text("")
+	, _markup (false)
+	, _elements (e)
+	, _icon (Gtkmm2ext::ArdourIcon::NoIcon)
 	, _tweaks (Tweaks (0))
 	, _char_pixel_width (0)
 	, _char_pixel_height (0)
@@ -108,7 +115,7 @@ ArdourButton::ArdourButton (const std::string& str, Element e)
 	, _text_width (0)
 	, _text_height (0)
 	, _diameter (0)
-	, _corner_radius (2.5)
+	, _corner_radius (3.5)
 	, _corner_mask (0xf)
 	, _angle(0)
 	, _xalign(.5)
@@ -140,6 +147,8 @@ ArdourButton::ArdourButton (const std::string& str, Element e)
 	set_text (str);
 	UIConfiguration::instance().ColorsChanged.connect (sigc::mem_fun (*this, &ArdourButton::color_handler));
 	UIConfiguration::instance().DPIReset.connect (sigc::mem_fun (*this, &ArdourButton::on_name_changed));
+	/* This is not provided by gtkmm */
+	signal_grab_broken_event().connect (sigc::mem_fun (*this, &ArdourButton::on_grab_broken_event));
 }
 
 ArdourButton::~ArdourButton()
@@ -166,22 +175,57 @@ ArdourButton::set_layout_font (const Pango::FontDescription& fd)
 	if (_layout) {
 		_layout->set_font_description (fd);
 		queue_resize ();
+		_char_pixel_width = 0;
+		_char_pixel_height = 0;
 	}
 }
 
 void
-ArdourButton::set_text (const std::string& str)
+ArdourButton::set_text_internal () {
+	assert (_layout);
+	if (_markup) {
+		_layout->set_markup (_text);
+	} else {
+		_layout->set_text (_text);
+	}
+}
+
+void
+ArdourButton::set_text (const std::string& str, bool markup)
 {
-	if (_text == str) {
+	if (!(_elements & Text)) {
 		return;
 	}
+	if (_text == str && _markup == markup) {
+		return;
+	}
+
 	_text = str;
+	_markup = markup;
 	if (!is_realized()) {
 		return;
 	}
 	ensure_layout ();
 	if (_layout && _layout->get_text() != _text) {
-		_layout->set_text (_text);
+		set_text_internal ();
+		/* on_size_request() will fill in _text_width/height
+		 * so queue it even if _sizing_text != "" */
+		queue_resize ();
+	}
+}
+
+void
+ArdourButton::set_sizing_text (const std::string& str)
+{
+	if (_sizing_text == str) {
+		return;
+	}
+	_sizing_text = str;
+	if (!is_realized()) {
+		return;
+	}
+	ensure_layout ();
+	if (_layout) {
 		queue_resize ();
 	}
 }
@@ -326,7 +370,12 @@ ArdourButton::render (cairo_t* cr, cairo_rectangle_t *)
 	}
 	else /* VectorIcons are exclusive to Pixbuf Icons */
 	if (_elements & VectorIcon) {
-		Gtkmm2ext::ArdourIcon::render (cr, _icon, get_width(), get_height(), active_state(), text_color);
+		int vw = get_width();
+		int vh = get_height();
+		if (_elements & Menu) {
+			vw -= _diameter + 4;
+		}
+		Gtkmm2ext::ArdourIcon::render (cr, _icon, vw, vh, active_state(), text_color);
 	}
 
 	const int text_margin = char_pixel_width();
@@ -382,7 +431,7 @@ ArdourButton::render (cairo_t* cr, cairo_rectangle_t *)
 			cairo_save (cr);
 			cairo_rotate(cr, _angle * M_PI / 180.0);
 			cairo_device_to_user(cr, &ww, &wh);
-			xa = (ww - _text_width) * _xalign;
+			xa = text_margin + (ww - _text_width - 2 * text_margin) * _xalign;
 			ya = (wh - _text_height) * _yalign;
 
 			/* quick hack for left/bottom alignment at -90deg
@@ -521,9 +570,11 @@ ArdourButton::on_realize()
 {
 	CairoWidget::on_realize ();
 	ensure_layout ();
-	if (_layout && _layout->get_text() != _text) {
-		_layout->set_text (_text);
-		queue_resize ();
+	if (_layout) {
+		if (_layout->get_text() != _text) {
+			set_text_internal ();
+			queue_resize ();
+		}
 	}
 }
 
@@ -543,27 +594,35 @@ ArdourButton::on_size_request (Gtk::Requisition* req)
 
 	if (_elements & Text) {
 
+		ensure_layout();
+		set_text_internal ();
+
+		/* render() needs the size of the displayed text */
+		_layout->get_pixel_size (_text_width, _text_height);
+
 		if (_tweaks & OccasionalText) {
 
 			/* size should not change based on presence or absence
 			 * of text.
 			 */
 
-			if (!_text.empty()) {
-				ensure_layout ();
-				_layout->set_text (_text);
-				_layout->get_pixel_size (_text_width, _text_height);
-			}
-
-		} else if (!_text.empty()) {
-
-			//if _layout does not exist, char_pixel_height() creates it,
+		} else { //if (!_text.empty() || !_sizing_text.empty()) {
 
 			req->height = std::max(req->height, (int) ceil(char_pixel_height() * BASELINESTRETCH + 1.0));
-			assert (_layout);
-			_layout->get_pixel_size (_text_width, _text_height);
 			req->width += rint(1.75 * char_pixel_width()); // padding
-			req->width += _text_width;
+
+			if (!_sizing_text.empty()) {
+				_layout->set_text (_sizing_text); /* use sizing text */
+			}
+
+			int sizing_text_width = 0, sizing_text_height = 0;
+			_layout->get_pixel_size (sizing_text_width, sizing_text_height);
+
+			req->width += sizing_text_width;
+
+			if (!_sizing_text.empty()) {
+				set_text_internal (); /* restore display text */
+			}
 		}
 
 		/* XXX hack (surprise). Deal with two common rotation angles */
@@ -616,7 +675,7 @@ ArdourButton::on_size_request (Gtk::Requisition* req)
 			req->width = req->height;
 		if (req->height < req->width)
 			req->height = req->width;
-	} else if (_text_width > 0 && !(_elements & (Menu | Indicator))) {
+	} else if (_sizing_text.empty() && _text_width > 0 && !(_elements & Menu)) {
 		// properly centered text for those elements that are centered
 		// (no sub-pixel offset)
 		if ((req->width - _text_width) & 1) { ++req->width; }
@@ -932,6 +991,11 @@ ArdourButton::on_style_changed (const RefPtr<Gtk::Style>&)
 {
 	_update_colors = true;
 	CairoWidget::set_dirty ();
+	_char_pixel_width = 0;
+	_char_pixel_height = 0;
+	if (is_realized()) {
+		queue_resize ();
+	}
 }
 
 void
@@ -978,6 +1042,7 @@ ArdourButton::setup_led_rect ()
 void
 ArdourButton::set_image (const RefPtr<Gdk::Pixbuf>& img)
 {
+	 _elements = (ArdourButton::Element) (_elements & ~ArdourButton::Text);
 	_pixbuf = img;
 	if (is_realized()) {
 		queue_resize ();
@@ -1058,6 +1123,16 @@ ArdourButton::on_leave_notify_event (GdkEventCrossing* ev)
 	}
 
 	return CairoWidget::on_leave_notify_event (ev);
+}
+
+bool
+ArdourButton::on_grab_broken_event(GdkEventGrabBroken* grab_broken_event) {
+	/* Our implicit grab due to a button_press was broken by another grab:
+	 * the button will not get any button_release event if the mouse leaves
+	 * while the grab is taken, so unpress ourselves */
+	_grabbed = false;
+	CairoWidget::set_dirty ();
+	return true;
 }
 
 void
@@ -1141,7 +1216,7 @@ ArdourButton::recalc_char_pixel_geometry ()
 	// NB. this is not static, since the geometry is different
 	// depending on the font used.
 	int w, h;
-	std::string x = _("ABCDEFGHIJLKMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
+	std::string x = _("@ABCDEFGHIJLKMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
 	_layout->set_text (x);
 	_layout->get_pixel_size (w, h);
 	_char_pixel_height = std::max(4, h);
@@ -1150,7 +1225,7 @@ ArdourButton::recalc_char_pixel_geometry ()
 	Glib::ustring gx(x);
 	_char_avg_pixel_width = w / (float)gx.size();
 	_char_pixel_width = std::max(4, (int) ceil (_char_avg_pixel_width));
-	_layout->set_text (_text);
+	set_text_internal (); /* restore display text */
 }
 
 void

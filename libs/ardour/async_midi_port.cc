@@ -46,6 +46,7 @@ AsyncMIDIPort::AsyncMIDIPort (string const & name, PortFlags flags)
 	, MIDI::Port (name, MIDI::Port::Flags (0))
 	, _currently_in_cycle (false)
 	, _last_write_timestamp (0)
+	, _flush_at_cycle_start (false)
 	, have_timer (false)
 	, output_fifo (2048)
 	, input_fifo (1024)
@@ -119,6 +120,9 @@ AsyncMIDIPort::cycle_start (MIDI::pframes_t nframes)
 
 	if (ARDOUR::Port::sends_output()) {
 		flush_output_fifo (nframes);
+		if (_flush_at_cycle_start) {
+			flush_buffers (nframes);
+		}
 	}
 
 	/* copy incoming data from the port buffer into the input FIFO
@@ -139,19 +143,20 @@ AsyncMIDIPort::cycle_start (MIDI::pframes_t nframes)
 			if (!have_timer) {
 				when += (*b).time();
 			}
-			input_fifo.write (when, (Evoral::EventType) 0, (*b).size(), (*b).buffer());
+			input_fifo.write (when, Evoral::NO_EVENT, (*b).size(), (*b).buffer());
 		}
 
 		if (!mb.empty()) {
 			_xthread.wakeup ();
 		}
+
 	}
 }
 
 void
 AsyncMIDIPort::cycle_end (MIDI::pframes_t nframes)
 {
-	if (ARDOUR::Port::sends_output()) {
+	if (ARDOUR::Port::sends_output() && !_flush_at_cycle_start) {
 		/* move any additional data from output FIFO into the port
 		   buffer.
 		*/
@@ -236,14 +241,14 @@ AsyncMIDIPort::write (const MIDI::byte * msg, size_t msglen, MIDI::timestamp_t t
 			   necessary.
 			*/
 			if (!vec.buf[0]->owns_buffer()) {
-                                vec.buf[0]->set_buffer (0, 0, true);
-                        }
+				vec.buf[0]->set_buffer (0, 0, true);
+			}
 			vec.buf[0]->set (msg, msglen, timestamp);
 		} else {
 			/* see comment in previous branch of if() statement */
 			if (!vec.buf[1]->owns_buffer()) {
-                                vec.buf[1]->set_buffer (0, 0, true);
-                        }
+				vec.buf[1]->set_buffer (0, 0, true);
+			}
 			vec.buf[1]->set (msg, msglen, timestamp);
 		}
 

@@ -879,7 +879,12 @@ Editor::set_selected_regionview_from_click (bool press, Selection::Operation op)
 		if (!regions.empty()) {
 			selection->add (regions);
 			commit = true;
+		} else if (selection->regions.empty() && !selection->selected (clicked_regionview)) {
+			/* ensure that at least the clicked regionview is selected. */
+			selection->set (clicked_regionview);
+			commit = true;
 		}
+
 	}
 
 out:
@@ -1246,7 +1251,6 @@ Editor::sensitize_the_right_region_actions ()
 		_region_actions->get_action("set-region-sync-position")->set_sensitive (false);
 		_region_actions->get_action("trim-front")->set_sensitive (false);
 		_region_actions->get_action("trim-back")->set_sensitive (false);
-		_region_actions->get_action("split-region")->set_sensitive (false);
 		_region_actions->get_action("place-transient")->set_sensitive (false);
 	}
 
@@ -1381,10 +1385,6 @@ Editor::region_selection_changed ()
 			*/
 			sensitize_all_region_actions (true);
 		}
-	}
-
-	if (_session && !_session->transport_rolling() && !selection->regions.empty()) {
-		maybe_locate_with_edit_preroll (selection->regions.start());
 	}
 
 	/* propagate into backend */
