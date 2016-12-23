@@ -532,7 +532,6 @@ Editor::canvas_fade_in_handle_event (GdkEvent *event, ArdourCanvas::Item* item, 
 
 	case GDK_BUTTON_RELEASE:
 		ret = button_release_handler (item, event, trim ? FadeInTrimHandleItem : FadeInHandleItem);
-		maybe_locate_with_edit_preroll ( rv->region()->position() );
 		break;
 
 	case GDK_MOTION_NOTIFY:
@@ -616,7 +615,6 @@ Editor::canvas_fade_out_handle_event (GdkEvent *event, ArdourCanvas::Item* item,
 
 	case GDK_BUTTON_RELEASE:
 		ret = button_release_handler (item, event, trim ? FadeOutTrimHandleItem : FadeOutHandleItem);
-		maybe_locate_with_edit_preroll ( rv->region()->last_frame() - rv->get_fade_out_shape_width() );
 		break;
 
 	case GDK_MOTION_NOTIFY:
@@ -1076,6 +1074,18 @@ Editor::canvas_ruler_event (GdkEvent *event, ArdourCanvas::Item* item, ItemType 
 			break;
 		}
 		return handled;
+	}
+
+	switch (event->type) {
+	case GDK_BUTTON_PRESS:
+		if (UIConfiguration::instance ().get_use_time_rulers_to_zoom_with_vertical_drag () &&
+		    Keyboard::no_modifier_keys_pressed (&event->button) && event->button.button == 1) {
+			_drags->set(new RulerZoomDrag(this, item), event);
+			return true;
+		}
+		break;
+	default:
+		break;
 	}
 
 	return typed_event (item, event, type);

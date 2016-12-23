@@ -166,7 +166,7 @@ class MixerStrip : public AxisView, public RouteUI, public Gtk::EventBox
 	ArdourButton         width_button;
 	ArdourButton         number_label;
 	Gtk::HBox           width_hide_box;
-	Gtk::EventBox*      spacer;
+	Gtk::EventBox		spacer;
 
 	void hide_clicked();
 	bool width_button_pressed (GdkEventButton *);
@@ -264,7 +264,6 @@ class MixerStrip : public AxisView, public RouteUI, public Gtk::EventBox
 	Gtk::Menu* route_ops_menu;
 	void build_route_ops_menu ();
 	gboolean name_button_button_press (GdkEventButton*);
-	gboolean name_button_button_release (GdkEventButton*);
 	gboolean number_button_button_press (GdkEventButton*);
 	void list_route_operations ();
 

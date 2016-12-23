@@ -86,9 +86,11 @@ class SoundFileBox : public Gtk::VBox, public ARDOUR::SessionHandlePtr, public P
 	Gtk::Label channels;
 	Gtk::Label samplerate;
 	Gtk::Label timecode;
+	Gtk::Label tempomap;
 
 	Gtk::Label channels_value;
 	Gtk::Label samplerate_value;
+	Gtk::Label tempomap_value;
 
 	Gtk::Label format_text;
 	AudioClock length_clock;
@@ -283,12 +285,16 @@ class SoundFileOmega : public SoundFileBrowser
 	Gtk::ComboBoxText where_combo;
 	Gtk::ComboBoxText channel_combo;
 	Gtk::ComboBoxText src_combo;
+	Gtk::ComboBoxText midi_track_name_combo;
 	InstrumentSelector instrument_combo;
 
 	Gtk::CheckButton copy_files_btn;
+	Gtk::CheckButton smf_tempo_btn;
 
 	void set_mode (Editing::ImportMode);
 	Editing::ImportMode get_mode() const;
+	ARDOUR::MidiTrackNameSource get_midi_track_name_source () const;
+	bool get_use_smf_tempo_map () const;
 	Editing::ImportPosition get_position() const;
 	Editing::ImportDisposition get_channel_disposition() const;
 	ARDOUR::SrcQuality get_src_quality() const;

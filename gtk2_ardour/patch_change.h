@@ -40,7 +40,9 @@ public:
 	            double                            x,
 	            double                            y,
 	            ARDOUR::InstrumentInfo&           info,
-	            ARDOUR::MidiModel::PatchChangePtr patch);
+	            ARDOUR::MidiModel::PatchChangePtr patch,
+		    ArdourCanvas::Color               outline_color,
+		    ArdourCanvas::Color               fill_color);
 
 	~PatchChange();
 
@@ -57,6 +59,7 @@ public:
 	ARDOUR::MidiModel::PatchChangePtr patch()       const { return _patch; }
 	ArdourCanvas::Item*               canvas_item() const { return _flag; }
 	ArdourCanvas::Item&               item()        const { return *_flag; }
+	ArdourCanvas::Flag*               flag()        const { return _flag; }
 
 private:
 	bool event_handler (GdkEvent *);

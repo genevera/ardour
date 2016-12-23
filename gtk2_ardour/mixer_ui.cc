@@ -137,6 +137,8 @@ Mixer_UI::Mixer_UI ()
 
 	_group_tabs = new MixerGroupTabs (this);
 	VBox* b = manage (new VBox);
+	b->set_spacing (0);
+	b->set_border_width (0);
 	b->pack_start (*_group_tabs, PACK_SHRINK);
 	b->pack_start (strip_packer);
 	b->show_all ();
@@ -252,15 +254,13 @@ Mixer_UI::Mixer_UI ()
 	list_vpacker.pack_start (rhs_pane2, true, true);
 
 	string vca_text = _("Control Masters");
-	Gtk::HBox* vca_top_padding = manage (new Gtk::HBox);
-	vca_top_padding->set_size_request (-1, 2);
-	vca_vpacker.pack_start (*vca_top_padding, false, false);
-
 	vca_label.set_text (vca_text);
-	vca_label_bar.set_size_request (-1, 16); /* must match height in GroupTabs::set_size_request() */
+	vca_label_bar.set_size_request (-1, 16 + 1); /* must match height in GroupTabs::set_size_request()  + 1 border px*/
 
+#ifndef MIXBUS
 	vca_label_bar.set_name (X_("VCALabelBar"));
 	vca_label_bar.add (vca_label);
+#endif
 
 	vca_vpacker.pack_start (vca_label_bar, false, false);
 
@@ -348,7 +348,6 @@ Mixer_UI::Mixer_UI ()
 	rhs_pane2.show();
 	strip_packer.show();
 	inner_pane.show();
-	vca_top_padding->show ();
 	vca_scroller.show();
 	vca_vpacker.show();
 	vca_hpacker.show();
@@ -621,7 +620,7 @@ Mixer_UI::add_stripables (StripableList& slist)
 
 			(*s)->presentation_info().PropertyChanged.connect (*this, invalidator(*this), boost::bind (&Mixer_UI::stripable_property_changed, this, _1, boost::weak_ptr<Stripable>(*s)), gui_context());
 			(*s)->PropertyChanged.connect (*this, invalidator(*this), boost::bind (&Mixer_UI::stripable_property_changed, this, _1, boost::weak_ptr<Stripable>(*s)), gui_context());
-						}
+		}
 
 	} catch (const std::exception& e) {
 		error << string_compose (_("Error adding GUI elements for new tracks/busses %1"), e.what()) << endmsg;
@@ -714,6 +713,11 @@ Mixer_UI::sync_presentation_info_from_treeview ()
 	bool change = false;
 	uint32_t order = 0;
 
+	// special case master if it's got PI order 0 lets keep it there
+	if (_session->master_out() && (_session->master_out()->presentation_info().order() == 0)) {
+		order++;
+	}
+
 	for (ri = rows.begin(); ri != rows.end(); ++ri) {
 		bool visible = (*ri)[stripable_columns.visible];
 		boost::shared_ptr<Stripable> stripable = (*ri)[stripable_columns.stripable];
@@ -736,6 +740,11 @@ Mixer_UI::sync_presentation_info_from_treeview ()
 
 		stripable->presentation_info().set_hidden (!visible);
 
+		// master may not get set here, but if it is zero keep it there
+		if (stripable->is_master() && (stripable->presentation_info().order() == 0)) {
+			continue;
+		}
+
 		if (order != stripable->presentation_info().order()) {
 			stripable->set_presentation_order (order, false);
 			change = true;
@@ -747,6 +756,7 @@ Mixer_UI::sync_presentation_info_from_treeview ()
 	if (change) {
 		DEBUG_TRACE (DEBUG::OrderKeys, "... notify PI change from mixer GUI\n");
 		_session->notify_presentation_info_change ();
+		_session->set_dirty();
 	}
 }
 
@@ -774,10 +784,11 @@ Mixer_UI::sync_treeview_from_presentation_info ()
 	}
 
 	OrderingKeys sorted;
+	const size_t cmp_max = rows.size ();
 
 	for (TreeModel::Children::iterator ri = rows.begin(); ri != rows.end(); ++ri, ++old_order) {
 		boost::shared_ptr<Stripable> stripable = (*ri)[stripable_columns.stripable];
-		sorted.push_back (OrderKeys (old_order, stripable->presentation_info().order()));
+		sorted.push_back (OrderKeys (old_order, stripable, cmp_max));
 	}
 
 	SortByNewDisplayOrder cmp;
@@ -936,6 +947,10 @@ Mixer_UI::set_session (Session* sess)
 	}
 
 	_group_tabs->set_session (sess);
+
+	if (_monitor_section) {
+		_monitor_section->set_session (_session);
+	}
 
 	if (!_session) {
 		return;
@@ -1265,8 +1280,18 @@ void
 Mixer_UI::spill_redisplay (boost::shared_ptr<VCA> vca)
 {
 	TreeModel::Children rows = track_model->children();
+	std::list<boost::shared_ptr<VCA> > vcas;
+	vcas.push_back (vca);
 
-	for (TreeModel::Children::iterator i = rows.begin(); i != rows.end(); ++i) {
+	for (TreeModel::Children::const_iterator i = rows.begin(); i != rows.end(); ++i) {
+		AxisView* av = (*i)[stripable_columns.strip];
+		VCAMasterStrip* vms = dynamic_cast<VCAMasterStrip*> (av);
+		if (vms && vms->vca()->slaved_to (vca)) {
+			vcas.push_back (vms->vca());
+		}
+	}
+
+	for (TreeModel::Children::const_iterator i = rows.begin(); i != rows.end(); ++i) {
 
 		AxisView* av = (*i)[stripable_columns.strip];
 		MixerStrip* strip = dynamic_cast<MixerStrip*> (av);
@@ -1285,7 +1310,15 @@ Mixer_UI::spill_redisplay (boost::shared_ptr<VCA> vca)
 			continue;
 		}
 
-		if (strip->route()->slaved_to (vca)) {
+		bool slaved = false;
+		for (std::list<boost::shared_ptr<VCA> >::const_iterator m = vcas.begin(); m != vcas.end(); ++m) {
+			if (strip->route()->slaved_to (*m)) {
+				slaved = true;
+				break;
+			}
+		}
+
+		if (slaved) {
 
 			if (strip->packed()) {
 				strip_packer.reorder_child (*strip, -1); /* put at end */
@@ -1480,8 +1513,52 @@ Mixer_UI::track_display_button_press (GdkEventButton* ev)
 		show_track_list_menu ();
 		return true;
 	}
+	if ((ev->type == GDK_BUTTON_PRESS) && (ev->button == 1)) {
+		TreeModel::Path path;
+		TreeViewColumn* column;
+		int cellx, celly;
+		if (track_display.get_path_at_pos ((int)ev->x, (int)ev->y, path, column, cellx, celly)) {
+			TreeIter iter = track_model->get_iter (path);
+			if ((*iter)[stripable_columns.visible]) {
+				boost::shared_ptr<ARDOUR::Stripable> s = (*iter)[stripable_columns.stripable];
+				move_stripable_into_view (s);
+			}
+		}
+	}
 
 	return false;
+}
+
+void
+Mixer_UI::move_stripable_into_view (boost::shared_ptr<ARDOUR::Stripable> s)
+{
+	if (!scroller.get_hscrollbar()) {
+		return;
+	}
+	if (s->presentation_info().special () || s->presentation_info().flag_match (PresentationInfo::VCA)) {
+		return;
+	}
+#ifdef MIXBUS
+	if (s->mixbus ()) {
+		return;
+	}
+#endif
+	bool found = false;
+	int x0 = 0;
+	for (list<MixerStrip *>::const_iterator i = strips.begin(); i != strips.end(); ++i) {
+		if ((*i)->route() == s) {
+			int y;
+			found = true;
+			(*i)->translate_coordinates (strip_packer, 0, 0, x0, y);
+			break;
+		}
+	}
+	if (!found) {
+		return;
+	}
+
+	Adjustment* adj = scroller.get_hscrollbar()->get_adjustment();
+	scroller.get_hscrollbar()->set_value (max (adj->get_lower(), min (adj->get_upper(), x0 - 1.0)));
 }
 
 void
@@ -2044,8 +2121,23 @@ Mixer_UI::scroll_left ()
 {
 	if (!scroller.get_hscrollbar()) return;
 	Adjustment* adj = scroller.get_hscrollbar()->get_adjustment();
-	/* stupid GTK: can't rely on clamping across versions */
-	scroller.get_hscrollbar()->set_value (max (adj->get_lower(), adj->get_value() - adj->get_step_increment()));
+	int sc_w = scroller.get_width();
+	int sp_w = strip_packer.get_width();
+	if (sp_w <= sc_w) {
+		return;
+	}
+	int lp = adj->get_value();
+	int lm = 0;
+	using namespace Gtk::Box_Helpers;
+	const BoxList& strips = strip_packer.children();
+	for (BoxList::const_iterator i = strips.begin(); i != strips.end(); ++i) {
+		lm += i->get_widget()->get_width ();
+		if (lm >= lp) {
+			lm -= i->get_widget()->get_width ();
+			break;
+		}
+	}
+	scroller.get_hscrollbar()->set_value (max (adj->get_lower(), min (adj->get_upper(), lm - 1.0)));
 }
 
 void
@@ -2053,8 +2145,22 @@ Mixer_UI::scroll_right ()
 {
 	if (!scroller.get_hscrollbar()) return;
 	Adjustment* adj = scroller.get_hscrollbar()->get_adjustment();
-	/* stupid GTK: can't rely on clamping across versions */
-	scroller.get_hscrollbar()->set_value (min (adj->get_upper(), adj->get_value() + adj->get_step_increment()));
+	int sc_w = scroller.get_width();
+	int sp_w = strip_packer.get_width();
+	if (sp_w <= sc_w) {
+		return;
+	}
+	int lp = adj->get_value();
+	int lm = 0;
+	using namespace Gtk::Box_Helpers;
+	const BoxList& strips = strip_packer.children();
+	for (BoxList::const_iterator i = strips.begin(); i != strips.end(); ++i) {
+		lm += i->get_widget()->get_width ();
+		if (lm > lp + 1) {
+			break;
+		}
+	}
+	scroller.get_hscrollbar()->set_value (max (adj->get_lower(), min (adj->get_upper(), lm - 1.0)));
 }
 
 bool
@@ -2403,6 +2509,9 @@ Mixer_UI::refill_favorite_plugins ()
 #endif
 #ifdef LXVST_SUPPORT
 	refiller (plugs, mgr.lxvst_plugin_info ());
+#endif
+#ifdef MACVST_SUPPORT
+	refiller (plugs, mgr.mac_vst_plugin_info ());
 #endif
 #ifdef AUDIOUNIT_SUPPORT
 	refiller (plugs, mgr.au_plugin_info ());
@@ -2754,7 +2863,7 @@ Mixer_UI::register_actions ()
 	myactions.register_action (group, "select-none", _("Deselect all strips and processors"), sigc::mem_fun (*this, &Mixer_UI::select_none));
 
 	myactions.register_action (group, "scroll-left", _("Scroll Mixer Window to the left"), sigc::mem_fun (*this, &Mixer_UI::scroll_left));
-	myactions.register_action (group, "scroll-right", _("Scroll Mixer Window to the left"), sigc::mem_fun (*this, &Mixer_UI::scroll_right));
+	myactions.register_action (group, "scroll-right", _("Scroll Mixer Window to the right"), sigc::mem_fun (*this, &Mixer_UI::scroll_right));
 
 	myactions.register_action (group, "toggle-midi-input-active", _("Toggle MIDI Input Active for Mixer-Selected Tracks/Busses"),
 	                           sigc::bind (sigc::mem_fun (*this, &Mixer_UI::toggle_midi_input_active), false));

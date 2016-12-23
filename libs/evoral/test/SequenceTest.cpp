@@ -14,6 +14,18 @@ SequenceTest::createTest ()
 	CPPUNIT_ASSERT(seq->notes().begin() == seq->notes().end());
 }
 
+void
+SequenceTest::copyTest ()
+{
+	DummyTypeMap map;
+	MySequence<Time> a(map);
+	for (Notes::const_iterator i = test_notes.begin(); i != test_notes.end(); ++i) {
+		a.notes().insert(*i);
+	}
+
+	MySequence<Time> b(a);
+	CPPUNIT_ASSERT_EQUAL(b.notes().size(), a.notes().size());
+}
 
 void
 SequenceTest::preserveEventOrderingTest ()
@@ -25,7 +37,7 @@ SequenceTest::preserveEventOrderingTest ()
 	for (Notes::const_iterator i = test_notes.begin(); i != test_notes.end(); ++i) {
 		uint8_t buffer[3];
 		Event<Time>* event = new Event<Time>(
-				DummyTypeMap::CONTROL, (*i)->on_event().time(), 3, buffer, true
+			(Evoral::EventType)DummyTypeMap::CONTROL, (*i)->on_event().time(), 3, buffer, true
 		);
 
 		event->buffer()[0] = MIDI_CMD_CONTROL;
@@ -74,30 +86,58 @@ SequenceTest::iteratorSeekTest ()
 		seq->notes().insert(*i);
 	}
 
+	// Iterate over all notes
 	bool on = true;
 	for (Sequence<Time>::const_iterator i = seq->begin(Evoral::Beats(600)); i != seq->end(); ++i) {
 		if (on) {
-			CPPUNIT_ASSERT(((const MIDIEvent<Time>&)*i).is_note_on());
+			CPPUNIT_ASSERT(i->is_note_on());
 			CPPUNIT_ASSERT_EQUAL(i->time(), Time((num_notes + 6) * 100));
 			++num_notes;
 			on = false;
 		} else {
-			CPPUNIT_ASSERT(((const MIDIEvent<Time>&)*i).is_note_off());
+			CPPUNIT_ASSERT(i->is_note_off());
 			on = true;
 		}
 	}
 
-	CPPUNIT_ASSERT_EQUAL(num_notes, size_t(6));
+	CPPUNIT_ASSERT_EQUAL(size_t(6), num_notes);
+
+	// Test invalidation
+	Sequence<Time>::const_iterator i = seq->begin(Time(600));
+	std::set< boost::weak_ptr< Note<Time> > > active_notes;
+	i.invalidate(&active_notes);
+	CPPUNIT_ASSERT_EQUAL((size_t)1, active_notes.size());
+
+	// Test resuming after invalidation
+	i = seq->begin(Time(601), false, std::set<Evoral::Parameter>(), &active_notes);
+	CPPUNIT_ASSERT(i->is_note_off());
+	on = false;
+	num_notes = 1;
+	for (; i != seq->end(); ++i) {
+		if (on) {
+			CPPUNIT_ASSERT(i->is_note_on());
+			CPPUNIT_ASSERT_EQUAL(Time((num_notes + 6) * 100), i->time());
+			++num_notes;
+			on = false;
+		} else {
+			CPPUNIT_ASSERT(i->is_note_off());
+			on = true;
+		}
+	}
+
+	CPPUNIT_ASSERT_EQUAL(size_t(6), num_notes);
+
+	// Test equality of copied iterators
+	i = seq->begin();
+	++i;
+	Sequence<Time>::const_iterator j = i;
+	CPPUNIT_ASSERT(i == j);
 }
 
 void
 SequenceTest::controlInterpolationTest ()
 {
 	seq->clear();
-
-	for (Notes::const_iterator i = test_notes.begin(); i != test_notes.end(); ++i) {
-		seq->notes().insert(*i);
-	}
 
 	static const uint64_t delay   = 1000;
 	static const uint32_t cc_type = 1;
@@ -120,22 +160,22 @@ SequenceTest::controlInterpolationTest ()
 	for (MySequence<Time>::const_iterator i = seq->begin(); i != seq->end(); ++i) {
 		sink.write(i->time(), i->event_type(), i->size(), i->buffer());
 	}
-	CPPUNIT_ASSERT(sink.events.size() == 3);
-	CPPUNIT_ASSERT(sink.events[0].first == 0);
-	CPPUNIT_ASSERT(sink.events[0].second == 0);
-	CPPUNIT_ASSERT(sink.events[1].first == 1000);
-	CPPUNIT_ASSERT(sink.events[1].second == 127);
-	CPPUNIT_ASSERT(sink.events[2].first == 2000);
-	CPPUNIT_ASSERT(sink.events[2].second == 0);
+	CPPUNIT_ASSERT_EQUAL((size_t)3, sink.events.size());
+	CPPUNIT_ASSERT_EQUAL(Evoral::Beats(0), sink.events[0].first);
+	CPPUNIT_ASSERT_EQUAL((uint8_t)0, sink.events[0].second);
+	CPPUNIT_ASSERT_EQUAL(Evoral::Beats(1000), sink.events[1].first);
+	CPPUNIT_ASSERT_EQUAL((uint8_t)127, sink.events[1].second);
+	CPPUNIT_ASSERT_EQUAL(Evoral::Beats(2000), sink.events[2].first);
+	CPPUNIT_ASSERT_EQUAL((uint8_t)0, sink.events[2].second);
 	sink.events.clear();
-	CPPUNIT_ASSERT(sink.events.size() == 0);
+	CPPUNIT_ASSERT_EQUAL((size_t)0, sink.events.size());
 
 	// Test linear interpolation
 	c->list()->set_interpolation(ControlList::Linear);
 	for (MySequence<Time>::const_iterator i = seq->begin(); i != seq->end(); ++i) {
 		sink.write(i->time(), i->event_type(), i->size(), i->buffer());
 	}
-	CPPUNIT_ASSERT(sink.events.size() == 128 * 2 - 1);
+	CPPUNIT_ASSERT_EQUAL((size_t)(128 * 2 - 1), sink.events.size());
 	Time    last_time(0);
 	int16_t last_value = -1;
 	bool    ascending  = true;
@@ -146,9 +186,9 @@ SequenceTest::controlInterpolationTest ()
 			ascending = false;
 		}
 		if (ascending) {
-			CPPUNIT_ASSERT(i->second == last_value + 1);
+			CPPUNIT_ASSERT_EQUAL((int)i->second, last_value + 1);
 		} else {
-			CPPUNIT_ASSERT(i->second == last_value - 1);
+			CPPUNIT_ASSERT_EQUAL((int)i->second, last_value - 1);
 		}
 		last_time = i->first;
 		last_value = i->second;

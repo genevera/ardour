@@ -45,6 +45,7 @@ namespace MIDI {
 namespace Name {
 class MasterDeviceNames;
 class CustomDeviceMode;
+struct PatchPrimaryKey;
 }
 }
 
@@ -113,9 +114,19 @@ public:
 protected:
 	void start_step_editing ();
 	void stop_step_editing ();
+	void processors_changed (ARDOUR::RouteProcessorChange);
 
 private:
 	sigc::signal<void, std::string, std::string>  _midi_patch_settings_changed;
+
+	void setup_midnam_patches ();
+	void update_patch_selector ();
+	void drop_instrument_ref ();
+	PBD::ScopedConnectionList midnam_connection;
+
+	void start_scroomer_update ();
+	void stop_scroomer_update ();
+	sigc::connection _note_range_changed_connection;
 
 	void model_changed(const std::string& model);
 	void custom_device_mode_changed(const std::string& mode);
@@ -124,10 +135,12 @@ private:
 	void build_automation_action_menu (bool);
 	Gtk::Menu* build_note_mode_menu();
 	Gtk::Menu* build_color_mode_menu();
+	Gtk::Menu* build_patch_menu();
 
 	void set_note_mode (ARDOUR::NoteMode mode, bool apply_to_selection = false);
 	void set_color_mode (ARDOUR::ColorMode, bool force = false, bool redisplay = true, bool apply_to_selection = false);
 	void set_note_range (MidiStreamView::VisibleNoteRange range, bool apply_to_selection = false);
+	void on_patch_menu_selected (int chn, const MIDI::Name::PatchPrimaryKey& key);
 
 	void route_active_changed ();
 	void note_range_changed ();
@@ -145,9 +158,6 @@ private:
 	Gtk::RadioMenuItem*          _meter_color_mode_item;
 	Gtk::RadioMenuItem*          _channel_color_mode_item;
 	Gtk::RadioMenuItem*          _track_color_mode_item;
-	Gtk::Label                   _playback_channel_status;
-	Gtk::Label                   _capture_channel_status;
-	Gtk::HBox                    _channel_status_box;
 	Gtk::VBox                    _midi_controls_box;
 	MidiChannelSelectorWindow*   _channel_selector;
 	ArdourDropdown               _midnam_model_selector;
@@ -161,6 +171,7 @@ private:
 	void add_channel_command_menu_item (Gtk::Menu_Helpers::MenuList& items, const std::string& label, ARDOUR::AutomationType auto_type, uint8_t cmd);
 
 	Gtk::Menu* controller_menu;
+	Gtk::Menu* poly_pressure_menu;
 
 	void add_single_channel_controller_item (Gtk::Menu_Helpers::MenuList& ctl_items, int ctl, const std::string& name);
 	void add_multi_channel_controller_item (Gtk::Menu_Helpers::MenuList& ctl_items, int ctl, const std::string& name);
@@ -187,9 +198,6 @@ private:
 	ParameterMenuMap _controller_menu_map;
 
 	StepEditor* _step_editor;
-
-	void capture_channel_mode_changed();
-	void playback_channel_mode_changed();
 };
 
 #endif /* __ardour_midi_time_axis_h__ */

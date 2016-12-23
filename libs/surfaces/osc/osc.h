@@ -98,6 +98,8 @@ class OSC : public ARDOUR::ControlProtocol, public AbstractUI<OSCUIRequest>
 
 	typedef std::vector<boost::shared_ptr<ARDOUR::Stripable> > Sorted;
 	Sorted get_sorted_stripables(std::bitset<32> types);
+	// cue
+	//Sorted cue_get_sorted_stripables(boost::shared_ptr<Route> aux);
 
 // keep a surface's global setup by remote server url
 	struct OSCSurface {
@@ -129,6 +131,7 @@ class OSC : public ARDOUR::ControlProtocol, public AbstractUI<OSCUIRequest>
 		 * [10] - Send Playhead position as samples
 		 * [11] - Send Playhead position as minutes seconds
 		 * [12]	- Send Playhead position like primary/secondary GUI clocks
+		 * [13] - Send well known feedback (for /select/command
 		 */
 
 
@@ -139,6 +142,20 @@ class OSC : public ARDOUR::ControlProtocol, public AbstractUI<OSCUIRequest>
 	std::string get_server_url ();
 	void set_debug_mode (OSCDebugMode m) { _debugmode = m; }
 	OSCDebugMode get_debug_mode () { return _debugmode; }
+	int get_portmode() { return address_only; }
+	void set_portmode (int pm) { address_only = pm; }
+	int get_banksize () { return default_banksize; }
+	void set_banksize (int bs) {default_banksize = bs; }
+	int get_gainmode() { return default_gainmode; }
+	void set_gainmode (int gm) { default_gainmode = gm; }
+	int get_defaultstrip() { return default_strip; }
+	void set_defaultstrip (int st) { default_strip = st; }
+	int get_defaultfeedback() { return default_feedback; }
+	void set_defaultfeedback (int fb) { default_feedback = fb; }
+	void clear_devices ();
+	void gui_changed ();
+	std::string get_remote_port () { return remote_port; }
+	void set_remote_port (std::string pt) { remote_port = pt; }
 
   protected:
         void thread_init ();
@@ -159,6 +176,12 @@ class OSC : public ARDOUR::ControlProtocol, public AbstractUI<OSCUIRequest>
 	std::string _osc_url_file;
 	bool _send_route_changes;
 	OSCDebugMode _debugmode;
+	bool address_only;
+	std::string remote_port;
+	uint32_t default_banksize;
+	uint32_t default_strip;
+	uint32_t default_feedback;
+	uint32_t default_gainmode;
 	bool tick;
 	bool bank_dirty;
 	bool global_init;
@@ -175,6 +198,7 @@ class OSC : public ARDOUR::ControlProtocol, public AbstractUI<OSCUIRequest>
 	// end "Application Hook" handles
 
 	std::string get_unix_server_url ();
+	lo_address get_address (lo_message msg);
 	OSCSurface * get_surface (lo_address addr);
 	uint32_t get_sid (boost::shared_ptr<ARDOUR::Stripable> strip, lo_address addr);
 	boost::shared_ptr<ARDOUR::Stripable> get_strip (uint32_t ssid, lo_address addr);
@@ -188,6 +212,8 @@ class OSC : public ARDOUR::ControlProtocol, public AbstractUI<OSCUIRequest>
 	int catchall (const char *path, const char *types, lo_arg **argv, int argc, void *data);
 	static int _catchall (const char *path, const char *types, lo_arg **argv, int argc, void *data, void *user_data);
 
+	int route_get_sends (lo_message msg);
+	int route_get_receives(lo_message msg);
 	void routes_list (lo_message msg);
 	void transport_frame (lo_message msg);
 	void transport_speed (lo_message msg);
@@ -198,30 +224,33 @@ class OSC : public ARDOUR::ControlProtocol, public AbstractUI<OSCUIRequest>
 		debugmsg (dgettext(PACKAGE, "OSC"), path, types, argv, argc); \
 	}
 
-#define PATH_CALLBACK_MSG(name)					\
-        static int _ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data, void *user_data) { \
+#define PATH_CALLBACK_MSG(name) \
+	static int _ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data, void *user_data) { \
 		return static_cast<OSC*>(user_data)->cb_ ## name (path, types, argv, argc, data); \
-        } \
-        int cb_ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data) { \
-		OSC_DEBUG;              \
+	} \
+	int cb_ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data) { \
+		OSC_DEBUG; \
 		if (argc > 0 && !strcmp (types, "f") && argv[0]->f != 1.0) { return 0; } \
-		name (data);		\
-		return 0;		\
+		name (data); \
+		return 0; \
 	}
 
+	PATH_CALLBACK_MSG(route_get_sends);
+	PATH_CALLBACK_MSG(route_get_receives);
 	PATH_CALLBACK_MSG(routes_list);
 	PATH_CALLBACK_MSG(transport_frame);
 	PATH_CALLBACK_MSG(transport_speed);
 	PATH_CALLBACK_MSG(record_enabled);
+	PATH_CALLBACK_MSG(refresh_surface);
 	PATH_CALLBACK_MSG(bank_up);
 	PATH_CALLBACK_MSG(bank_down);
 
 #define PATH_CALLBACK(name) \
-        static int _ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data, void *user_data) { \
+	static int _ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data, void *user_data) { \
 		return static_cast<OSC*>(user_data)->cb_ ## name (path, types, argv, argc, data); \
-        } \
-        int cb_ ## name (const char *path, const char *types, lo_arg ** argv, int argc, void *) { \
-		OSC_DEBUG;              \
+	} \
+	int cb_ ## name (const char *path, const char *types, lo_arg ** argv, int argc, void *) { \
+		OSC_DEBUG; \
 		if (argc > 0 && !strcmp (types, "f") && argv[0]->f != 1.0) { return 0; } \
 		name (); \
 		return 0; \
@@ -283,16 +312,16 @@ class OSC : public ARDOUR::ControlProtocol, public AbstractUI<OSCUIRequest>
 	PATH_CALLBACK(scroll_up_1_page);
 	PATH_CALLBACK(scroll_dn_1_page);
 
-#define PATH_CALLBACK1(name,type,optional)					\
-        static int _ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data, void *user_data) { \
+#define PATH_CALLBACK1(name,type,optional) \
+	static int _ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data, void *user_data) { \
 		return static_cast<OSC*>(user_data)->cb_ ## name (path, types, argv, argc, data); \
-        } \
-        int cb_ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *) { \
-		OSC_DEBUG;              \
-                if (argc > 0) {						\
-			name (optional argv[0]->type);		\
-                }							\
-		return 0;						\
+	} \
+	int cb_ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *) { \
+		OSC_DEBUG; \
+		if (argc > 0) { \
+			name (optional argv[0]->type); \
+		} \
+		return 0; \
 	}
 
 	PATH_CALLBACK1(set_transport_speed,f,);
@@ -307,16 +336,16 @@ class OSC : public ARDOUR::ControlProtocol, public AbstractUI<OSCUIRequest>
 	PATH_CALLBACK1(monitor_set_gain,f,);
 	PATH_CALLBACK1(monitor_set_fader,f,);
 
-#define PATH_CALLBACK1_MSG(name,arg1type)			\
-        static int _ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data, void *user_data) { \
+#define PATH_CALLBACK1_MSG(name,arg1type) \
+	static int _ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data, void *user_data) { \
 		return static_cast<OSC*>(user_data)->cb_ ## name (path, types, argv, argc, data); \
-        } \
-        int cb_ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data) { \
-		OSC_DEBUG;              \
-                if (argc > 0) {						\
+	} \
+	int cb_ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data) { \
+		OSC_DEBUG; \
+		if (argc > 0) { \
 			name (argv[0]->arg1type, data); \
-                }							\
-		return 0;						\
+		} \
+		return 0; \
 	}
 
 	// pan position needs message info to send feedback
@@ -352,53 +381,65 @@ class OSC : public ARDOUR::ControlProtocol, public AbstractUI<OSCUIRequest>
 	PATH_CALLBACK1_MSG(sel_eq_hpf,f);
 	PATH_CALLBACK1_MSG(sel_expand,i);
 
-#define PATH_CALLBACK2(name,arg1type,arg2type)			\
-        static int _ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data, void *user_data) { \
+#define PATH_CALLBACK2(name,arg1type,arg2type) \
+	static int _ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data, void *user_data) { \
 		return static_cast<OSC*>(user_data)->cb_ ## name (path, types, argv, argc, data); \
-        } \
-        int cb_ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *) { \
-		OSC_DEBUG;              \
-                if (argc > 1) {						\
+	} \
+	int cb_ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *) { \
+		OSC_DEBUG; \
+		if (argc > 1) { \
 			name (argv[0]->arg1type, argv[1]->arg2type); \
-                }							\
-		return 0;						\
+		} \
+		return 0; \
 	}
 
-#define PATH_CALLBACK2_MSG(name,arg1type,arg2type)			\
-        static int _ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data, void *user_data) { \
+#define PATH_CALLBACK2_MSG(name,arg1type,arg2type) \
+	static int _ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data, void *user_data) { \
 		return static_cast<OSC*>(user_data)->cb_ ## name (path, types, argv, argc, data); \
-        } \
-        int cb_ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data) { \
-		OSC_DEBUG;              \
-                if (argc > 1) {						\
+	} \
+	int cb_ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data) { \
+		OSC_DEBUG; \
+		if (argc > 1) {	\
 			name (argv[0]->arg1type, argv[1]->arg2type, data); \
-                }							\
-		return 0;						\
+		} \
+		return 0; \
 	}
 
-#define PATH_CALLBACK3(name,arg1type,arg2type,arg3type)                \
-        static int _ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data, void *user_data) { \
-               return static_cast<OSC*>(user_data)->cb_ ## name (path, types, argv, argc, data); \
-        } \
-        int cb_ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data) { \
-		OSC_DEBUG;              \
-                if (argc > 1) {                                                \
-                 name (argv[0]->arg1type, argv[1]->arg2type,argv[2]->arg3type, data); \
-                }                                                      \
-               return 0;                                               \
-       }
+#define PATH_CALLBACK2_MSG_s(name,arg1type,arg2type) \
+	static int _ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data, void *user_data) { \
+		return static_cast<OSC*>(user_data)->cb_ ## name (path, types, argv, argc, data); \
+	} \
+	int cb_ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data) { \
+		OSC_DEBUG; \
+		if (argc > 1) {	\
+			name (argv[0]->arg1type, &argv[1]->arg2type, data); \
+		} \
+		return 0; \
+	}
 
-#define PATH_CALLBACK4(name,arg1type,arg2type,arg3type,arg4type)               \
-        static int _ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data, void *user_data) { \
-               return static_cast<OSC*>(user_data)->cb_ ## name (path, types, argv, argc, data); \
-        } \
-        int cb_ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data) { \
-		OSC_DEBUG;              \
-                if (argc > 1) {                                                \
-                 name (argv[0]->arg1type, argv[1]->arg2type,argv[2]->arg3type,argv[3]->arg4type, data); \
-                }                                                      \
-               return 0;                                               \
-       }
+#define PATH_CALLBACK3(name,arg1type,arg2type,arg3type) \
+	static int _ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data, void *user_data) { \
+		return static_cast<OSC*>(user_data)->cb_ ## name (path, types, argv, argc, data); \
+	} \
+	int cb_ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data) { \
+		OSC_DEBUG; \
+		if (argc > 1) { \
+			name (argv[0]->arg1type, argv[1]->arg2type,argv[2]->arg3type, data); \
+		} \
+		return 0; \
+	}
+
+#define PATH_CALLBACK4(name,arg1type,arg2type,arg3type,arg4type) \
+	static int _ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data, void *user_data) { \
+		return static_cast<OSC*>(user_data)->cb_ ## name (path, types, argv, argc, data); \
+	} \
+	int cb_ ## name (const char *path, const char *types, lo_arg **argv, int argc, void *data) { \
+		OSC_DEBUG; \
+		if (argc > 1) { \
+			name (argv[0]->arg1type, argv[1]->arg2type,argv[2]->arg3type,argv[3]->arg4type, data); \
+		} \
+		return 0; \
+	}
 
 	PATH_CALLBACK2_MSG(sel_sendgain,i,f);
 	PATH_CALLBACK2_MSG(sel_sendfader,i,f);
@@ -411,6 +452,7 @@ class OSC : public ARDOUR::ControlProtocol, public AbstractUI<OSCUIRequest>
 	PATH_CALLBACK4(set_surface,i,i,i,i);
 	PATH_CALLBACK2(locate,i,i);
 	PATH_CALLBACK2(loop_location,i,i);
+	PATH_CALLBACK2_MSG_s(route_rename,i,s);
 	PATH_CALLBACK2_MSG(route_mute,i,i);
 	PATH_CALLBACK2_MSG(route_solo,i,i);
 	PATH_CALLBACK2_MSG(route_solo_iso,i,i);
@@ -432,7 +474,13 @@ class OSC : public ARDOUR::ControlProtocol, public AbstractUI<OSCUIRequest>
 	PATH_CALLBACK3(route_set_send_enable,i,i,f);
 	PATH_CALLBACK4(route_plugin_parameter,i,i,i,f);
 	PATH_CALLBACK3(route_plugin_parameter_print,i,i,i);
+	PATH_CALLBACK2_MSG(route_plugin_activate,i,i);
+	PATH_CALLBACK2_MSG(route_plugin_deactivate,i,i);
+	PATH_CALLBACK1_MSG(route_plugin_list,i);
+	PATH_CALLBACK2_MSG(route_plugin_descriptor,i,i);
+	PATH_CALLBACK2_MSG(route_plugin_reset,i,i);
 
+	int route_rename (int rid, char *s, lo_message msg);
 	int route_mute (int rid, int yn, lo_message msg);
 	int route_solo (int rid, int yn, lo_message msg);
 	int route_solo_iso (int rid, int yn, lo_message msg);
@@ -457,6 +505,11 @@ class OSC : public ARDOUR::ControlProtocol, public AbstractUI<OSCUIRequest>
 	int route_set_send_enable (int rid, int sid, float val, lo_message msg);
 	int route_plugin_parameter (int rid, int piid,int par, float val, lo_message msg);
 	int route_plugin_parameter_print (int rid, int piid,int par, lo_message msg);
+	int route_plugin_activate (int rid, int piid, lo_message msg);
+	int route_plugin_deactivate (int rid, int piid, lo_message msg);
+	int route_plugin_list(int ssid, lo_message msg);
+	int route_plugin_descriptor(int ssid, int piid, lo_message msg);
+	int route_plugin_reset(int ssid, int piid, lo_message msg);
 
 	//banking functions
 	int set_bank (uint32_t bank_start, lo_message msg);
@@ -468,6 +521,7 @@ class OSC : public ARDOUR::ControlProtocol, public AbstractUI<OSCUIRequest>
 	int set_surface_strip_types (uint32_t st, lo_message msg);
 	int set_surface_feedback (uint32_t fb, lo_message msg);
 	int set_surface_gainmode (uint32_t gm, lo_message msg);
+	int refresh_surface (lo_message msg);
 
 	int master_set_gain (float dB);
 	int master_set_fader (float position);

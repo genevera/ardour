@@ -209,7 +209,6 @@ AddRouteDialog::~AddRouteDialog ()
 void
 AddRouteDialog::channel_combo_changed ()
 {
-	maybe_update_name_template_entry ();
 	refill_track_modes ();
 }
 
@@ -371,8 +370,13 @@ AddRouteDialog::refill_track_modes ()
 	vector<string> s;
 
 	s.push_back (_("Normal"));
+#ifdef XXX_OLD_DESTRUCTIVE_API_XXX
 	s.push_back (_("Non Layered"));
+#endif
 	s.push_back (_("Tape"));
+	if (!ARDOUR::Profile->get_mixbus ()) {
+		s.push_back (_("Tape"));
+	}
 
 	set_popdown_strings (mode_combo, s);
 	mode_combo.set_active_text (s.front());
@@ -614,9 +618,11 @@ AddRouteDialog::new_group_dialog_finished (int r, RouteGroupDialog* d)
 	delete_when_idle (d);
 }
 
-AddRouteDialog::InsertAt
+RouteDialogs::InsertAt
 AddRouteDialog::insert_at ()
 {
+	using namespace RouteDialogs;
+
 	std::string str = insert_at_combo.get_active_text();
 
 	if (str == _("First")) {

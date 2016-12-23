@@ -38,6 +38,7 @@
 #include "editing.h"
 #include "editor.h"
 #include "gui_thread.h"
+#include "main_clock.h"
 #include "time_axis_view.h"
 #include "ui_config.h"
 #include "utils.h"
@@ -202,6 +203,9 @@ Editor::register_actions ()
 	reg_sens (editor_actions, "select-punch-range", _("Set Range to Punch Range"), sigc::mem_fun(*this, &Editor::set_selection_from_punch));
 	reg_sens (editor_actions, "select-from-regions", _("Set Range to Selected Regions"), sigc::mem_fun(*this, &Editor::set_selection_from_region));
 
+	reg_sens (editor_actions, "edit-current-tempo", _("Edit Current Tempo"), sigc::mem_fun(*this, &Editor::edit_current_tempo));
+	reg_sens (editor_actions, "edit-current-meter", _("Edit Current Meter"), sigc::mem_fun(*this, &Editor::edit_current_meter));
+
 	reg_sens (editor_actions, "select-all-after-edit-cursor", _("Select All After Edit Point"), sigc::bind (sigc::mem_fun(*this, &Editor::select_all_selectables_using_edit), true, false));
 	reg_sens (editor_actions, "alternate-select-all-after-edit-cursor", _("Select All After Edit Point"), sigc::bind (sigc::mem_fun(*this, &Editor::select_all_selectables_using_edit), true, false));
 	reg_sens (editor_actions, "select-all-before-edit-cursor", _("Select All Before Edit Point"), sigc::bind (sigc::mem_fun(*this, &Editor::select_all_selectables_using_edit), false, false));
@@ -254,6 +258,7 @@ Editor::register_actions ()
 	reg_sens (editor_actions, "set-session-start-from-playhead", _("Set Session Start from Playhead"), sigc::mem_fun(*this, &Editor::set_session_start_from_playhead));
 	reg_sens (editor_actions, "set-session-end-from-playhead", _("Set Session End from Playhead"), sigc::mem_fun(*this, &Editor::set_session_end_from_playhead));
 
+	reg_sens (editor_actions, "toggle-location-at-playhead", _("Toggle Mark at Playhead"), sigc::mem_fun(*this, &Editor::toggle_location_at_playhead_cursor));
 	reg_sens (editor_actions, "add-location-from-playhead", _("Add Mark from Playhead"), sigc::mem_fun(*this, &Editor::add_location_from_playhead_cursor));
 	reg_sens (editor_actions, "alternate-add-location-from-playhead", _("Add Mark from Playhead"), sigc::mem_fun(*this, &Editor::add_location_from_playhead_cursor));
 
@@ -271,7 +276,8 @@ Editor::register_actions ()
 	reg_sens (editor_actions, "temporal-zoom-out", _("Zoom Out"), sigc::bind (sigc::mem_fun(*this, &Editor::temporal_zoom_step), true));
 	reg_sens (editor_actions, "temporal-zoom-in", _("Zoom In"), sigc::bind (sigc::mem_fun(*this, &Editor::temporal_zoom_step), false));
 	reg_sens (editor_actions, "zoom-to-session", _("Zoom to Session"), sigc::mem_fun(*this, &Editor::temporal_zoom_session));
-	reg_sens (editor_actions, "zoom-to-selection", _("Zoom to Selection"), sigc::bind (sigc::mem_fun(*this, &Editor::temporal_zoom_selection), false));
+	reg_sens (editor_actions, "zoom-to-selection", _("Zoom to Selection"), sigc::bind (sigc::mem_fun(*this, &Editor::temporal_zoom_selection), Both));
+	reg_sens (editor_actions, "zoom-to-selection-horiz", _("Zoom to Selection (Horizontal)"), sigc::bind (sigc::mem_fun(*this, &Editor::temporal_zoom_selection), Horizontal));
 	reg_sens (editor_actions, "toggle-zoom", _("Toggle Zoom State"), sigc::mem_fun(*this, &Editor::swap_visual_state));
 
 	reg_sens (editor_actions, "expand-tracks", _("Expand Track Height"), sigc::bind (sigc::mem_fun (*this, &Editor::tav_zoom_step), false));
@@ -300,8 +306,8 @@ Editor::register_actions ()
 
 	act = reg_sens (editor_actions, "scroll-tracks-up", _("Scroll Tracks Up"), sigc::mem_fun(*this, &Editor::scroll_tracks_up));
 	act = reg_sens (editor_actions, "scroll-tracks-down", _("Scroll Tracks Down"), sigc::mem_fun(*this, &Editor::scroll_tracks_down));
-	act = reg_sens (editor_actions, "step-tracks-up", _("Step Tracks Up"), sigc::mem_fun(*this, &Editor::scroll_tracks_up_line));
-	act = reg_sens (editor_actions, "step-tracks-down", _("Step Tracks Down"), sigc::mem_fun(*this, &Editor::scroll_tracks_down_line));
+	act = reg_sens (editor_actions, "step-tracks-up", _("Step Tracks Up"), sigc::hide_return (sigc::bind (sigc::mem_fun(*this, &Editor::scroll_up_one_track), true)));
+	act = reg_sens (editor_actions, "step-tracks-down", _("Step Tracks Down"), sigc::hide_return (sigc::bind (sigc::mem_fun(*this, &Editor::scroll_down_one_track), true)));
 
 	reg_sens (editor_actions, "scroll-backward", _("Scroll Backward"), sigc::bind (sigc::mem_fun(*this, &Editor::scroll_backward), 0.8f));
 	reg_sens (editor_actions, "scroll-forward", _("Scroll Forward"), sigc::bind (sigc::mem_fun(*this, &Editor::scroll_forward), 0.8f));
@@ -329,8 +335,13 @@ Editor::register_actions ()
 
 	reg_sens (editor_actions, "set-playhead", _("Playhead to Mouse"), sigc::mem_fun(*this, &Editor::set_playhead_cursor));
 	reg_sens (editor_actions, "set-edit-point", _("Active Marker to Mouse"), sigc::mem_fun(*this, &Editor::set_edit_point));
+	reg_sens (editor_actions, "set-auto-punch-range", _("Set Auto Punch In/Out from Playhead"), sigc::mem_fun(*this, &Editor::set_auto_punch_range));
 
-	reg_sens (editor_actions, "duplicate-range", _("Duplicate Range"), sigc::bind (sigc::mem_fun(*this, &Editor::duplicate_range), false));
+	reg_sens (editor_actions, "duplicate", _("Duplicate"), sigc::bind (sigc::mem_fun(*this, &Editor::duplicate_range), false));
+
+	/* Open the dialogue to duplicate selected regions multiple times */
+	reg_sens (editor_actions, "multi-duplicate", _ ("Multi-Duplicate..."),
+	          sigc::bind (sigc::mem_fun (*this, &Editor::duplicate_range), true));
 
 	undo_action = reg_sens (editor_actions, "undo", S_("Command|Undo"), sigc::bind (sigc::mem_fun(*this, &Editor::undo), 1U));
 
@@ -359,6 +370,8 @@ Editor::register_actions ()
 	reg_sens (editor_actions, "editor-cut", _("Cut"), sigc::mem_fun(*this, &Editor::cut));
 	reg_sens (editor_actions, "editor-delete", _("Delete"), sigc::mem_fun(*this, &Editor::delete_));
 	reg_sens (editor_actions, "alternate-editor-delete", _("Delete"), sigc::mem_fun(*this, &Editor::delete_));
+
+	reg_sens (editor_actions, "split-region", _("Split/Separate"), sigc::mem_fun (*this, &Editor::split_region));
 
 	reg_sens (editor_actions, "editor-copy", _("Copy"), sigc::mem_fun(*this, &Editor::copy));
 	reg_sens (editor_actions, "editor-paste", _("Paste"), sigc::mem_fun(*this, &Editor::keyboard_paste));
@@ -746,6 +759,11 @@ Editor::register_actions ()
 
 	myactions.register_action (editor_actions, X_("toggle-midi-input-active"), _("Toggle MIDI Input Active for Editor-Selected Tracks/Busses"),
 				   sigc::bind (sigc::mem_fun (*this, &Editor::toggle_midi_input_active), false));
+
+
+	/* MIDI stuff */
+	reg_sens (editor_actions, "quantize", _("Quantize"), sigc::mem_fun (*this, &Editor::quantize_region));
+
 }
 
 void
@@ -978,6 +996,20 @@ Editor::toggle_measure_visibility ()
 		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
 		set_show_measures (tact->get_active());
 	}
+}
+
+void
+Editor::edit_current_meter ()
+{
+	ARDOUR::MeterSection* ms = const_cast<ARDOUR::MeterSection*>(&_session->tempo_map().meter_section_at_frame (ARDOUR_UI::instance()->primary_clock->absolute_time()));
+	edit_meter_section (ms);
+}
+
+void
+Editor::edit_current_tempo ()
+{
+	ARDOUR::TempoSection* ts = const_cast<ARDOUR::TempoSection*>(&_session->tempo_map().tempo_section_at_frame (ARDOUR_UI::instance()->primary_clock->absolute_time()));
+	edit_tempo_section (ts);
 }
 
 RefPtr<RadioAction>
@@ -1725,43 +1757,6 @@ Editor::parameter_changed (std::string p)
 }
 
 void
-Editor::reset_focus (Gtk::Widget* w)
-{
-	/* this resets focus to the first focusable parent of the given widget,
-	 * or, if there is no focusable parent, cancels focus in the toplevel
-	 * window that the given widget is packed into (if there is one).
-	 */
-
-	if (!w) {
-		return;
-	}
-
-	Gtk::Widget* top = w->get_toplevel();
-
-	if (!top || !top->is_toplevel()) {
-		return;
-	}
-
-	w = w->get_parent ();
-
-	while (w) {
-		if (w->get_can_focus ()) {
-			Window* win = dynamic_cast<Window*> (top);
-			win->set_focus (*w);
-			return;
-		}
-		w = w->get_parent ();
-	}
-
-	/* no focusable parent found, cancel focus in top level window.
-	   C++ API cannot be used for this. Thanks, references.
-	 */
-
-	gtk_window_set_focus (GTK_WINDOW(top->gobj()), 0);
-
-}
-
-void
 Editor::reset_canvas_action_sensitivity (bool onoff)
 {
 	if (_edit_point != EditAtMouse) {
@@ -1860,7 +1855,7 @@ Editor::register_region_actions ()
 		);
 
 	/* Duplicate selected regions */
-	reg_sens (_region_actions, "duplicate-region", _("Duplicate"), sigc::bind (sigc::mem_fun (*this, &Editor::duplicate_range), false));
+	reg_sens (_region_actions, "duplicate-region", _("Duplicate"), sigc::bind (sigc::mem_fun (*this, &Editor::duplicate_regions), 1));
 
 	/* Open the dialogue to duplicate selected regions multiple times */
 	reg_sens (
@@ -2005,7 +2000,6 @@ Editor::register_region_actions ()
 
 	reg_sens (_region_actions, "set-region-sync-position", _("Set Sync Position"), sigc::mem_fun (*this, &Editor::set_region_sync_position));
 	reg_sens (_region_actions, "place-transient", _("Place Transient"), sigc::mem_fun (*this, &Editor::place_transient));
-	reg_sens (_region_actions, "split-region", _("Split/Separate"), sigc::mem_fun (*this, &Editor::split_region));
 	reg_sens (_region_actions, "trim-front", _("Trim Start at Edit Point"), sigc::mem_fun (*this, &Editor::trim_region_front));
 	reg_sens (_region_actions, "trim-back", _("Trim End at Edit Point"), sigc::mem_fun (*this, &Editor::trim_region_back));
 

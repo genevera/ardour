@@ -31,6 +31,13 @@
 # define M_PI 3.1415926
 #endif
 
+#ifdef COMPILER_MSVC
+#include <float.h>
+#define isfinite_local(val) (bool)_finite((double)val)
+#else
+#define isfinite_local isfinite
+#endif
+
 typedef enum {
 	ADELAY_INPUT = 0,
 	ADELAY_OUTPUT,
@@ -45,8 +52,8 @@ typedef enum {
 	ADELAY_FEEDBACK,
 	ADELAY_LPF,
 	ADELAY_GAIN,
-	
 	ADELAY_DELAYTIME,
+	ADELAY_ENABLE,
 } PortIndex;
 
 
@@ -79,6 +86,7 @@ typedef struct {
 	float* gain;
 	
 	float* delaytime;
+	float* enable;
 
 	float srate;
 	float bpm;
@@ -154,8 +162,7 @@ instantiate(const LV2_Descriptor* descriptor,
 
 	adelay->srate = rate;
 	adelay->bpmvalid = 0;
-	// 25Hz time constant @ 64fpp
-	adelay->tau = (1.0 - exp(-2.0 * M_PI * 64. * 25. / adelay->srate));
+	adelay->tau = (1.0 - exp (-2.f * M_PI * 25.f / adelay->srate));
 
 	return (LV2_Handle)adelay;
 }
@@ -204,13 +211,24 @@ connect_port(LV2_Handle instance,
 	case ADELAY_DELAYTIME:
 		adelay->delaytime = (float*)data;
 		break;
+	case ADELAY_ENABLE:
+		adelay->enable = (float*)data;
+		break;
 	}
 }
 
 static inline float
-sanitize_denormal(float value) {
+sanitize_denormal(const float value) {
 	if (!isnormal(value)) {
-		value = 0.f;
+		return 0.f;
+	}
+	return value;
+}
+
+static inline float
+sanitize_input(const float value) {
+	if (!isfinite_local (value)) {
+		return 0.f;
 	}
 	return value;
 }
@@ -293,12 +311,11 @@ static void lpfRbj(LV2_Handle instance, float fc, float srate)
 	adelay->B5 = adelay->B3;
 }
 
-static float runfilter(LV2_Handle instance, float in)
+static float runfilter(LV2_Handle instance, const float in)
 {
 	ADelay* a = (ADelay*)instance;
 
 	float out;
-	in = sanitize_denormal(in);
 
 	out = a->B0/a->A0*in + a->B1/a->A0*a->state[0] + a->B2/a->A0*a->state[1]
 			-a->A1/a->A0*a->state[2] - a->A2/a->A0*a->state[3] + 1e-20;
@@ -306,7 +323,7 @@ static float runfilter(LV2_Handle instance, float in)
 	a->state[1] = a->state[0];
 	a->state[0] = in;
 	a->state[3] = a->state[2];
-	a->state[2] = out;
+	a->state[2] = sanitize_input (out);
 	return out;
 }
 
@@ -352,8 +369,18 @@ run(LV2_Handle instance, uint32_t n_samples)
 	const float* const input = adelay->input;
 	float* const output = adelay->output;
 
-	float srate = adelay->srate;
-	float tau = adelay->tau;
+	const float srate = adelay->srate;
+	const float tau = adelay->tau;
+
+	float wetdry_target = *adelay->wetdry / 100.f;
+	float gain_target = from_dB(*adelay->gain);
+	float wetdry = adelay->wetdryold;
+	float gain = adelay->gainold;
+
+	if (*adelay->enable <= 0) {
+		wetdry_target = 0.f;
+		gain_target = 1.0;
+	}
 
 	uint32_t i;
 	float in;
@@ -362,6 +389,8 @@ run(LV2_Handle instance, uint32_t n_samples)
 	float inv;
 	float xfade;
 	int recalc;
+
+	// TODO LPF
 	if (*(adelay->inv) < 0.5) {
 		inv = -1.f;
 	} else {
@@ -385,10 +414,8 @@ run(LV2_Handle instance, uint32_t n_samples)
 		recalc = 1;
 	}
 	if (!is_eq(adelay->lpfold, *adelay->lpf, 0.1)) {
-		adelay->lpfold += tau * (*adelay->lpf - adelay->lpfold);
-		recalc = 1;
-	}
-	if (*(adelay->gain) != adelay->gainold) {
+		float  tc = (1.0 - exp (-2.f * M_PI * n_samples * 25.f / adelay->srate));
+		adelay->lpfold += tc * (*adelay->lpf - adelay->lpfold);
 		recalc = 1;
 	}
 	
@@ -404,35 +431,48 @@ run(LV2_Handle instance, uint32_t n_samples)
 	}
 
 	xfade = 0.f;
+
+	float fbstate = adelay->fbstate;
+	const float feedback = *adelay->feedback;
+
 	for (i = 0; i < n_samples; i++) {
-		in = input[i];
-		adelay->z[adelay->posz] = in + *adelay->feedback / 100. * adelay->fbstate;
-		adelay->fbstate = 0.f;
+		in = sanitize_input (input[i]);
+		adelay->z[adelay->posz] = sanitize_denormal (in + feedback / 100.f * fbstate);
 		int p = adelay->posz - adelay->tap[adelay->active]; // active line
 		if (p<0) p += MAX_DELAY;
-		adelay->fbstate += adelay->z[p];
+		fbstate = adelay->z[p];
 		
 		if (recalc) {
 			xfade += 1.0f / (float)n_samples;
-			adelay->fbstate *= (1.-xfade);
+			fbstate *= (1.-xfade);
 			p = adelay->posz - adelay->tap[adelay->next]; // next line
 			if (p<0) p += MAX_DELAY;
-			adelay->fbstate += adelay->z[p] * xfade;
+			fbstate += adelay->z[p] * xfade;
 		}
-		output[i] = from_dB(*(adelay->gain)) * ((100.-*(adelay->wetdry)) / 100. * in + *(adelay->wetdry) / 100. * -inv * runfilter(adelay, adelay->fbstate));
+
+		wetdry += tau * (wetdry_target - wetdry) + 1e-12;
+		gain += tau * (gain_target - gain) + 1e-12;
+
+		output[i] = (1.f - wetdry) * in;
+		output[i] += wetdry * -inv * runfilter(adelay, fbstate);
+		output[i] *= gain;
+
 		if (++(adelay->posz) >= MAX_DELAY) {
 			adelay->posz = 0;
 		}
 	}
+
+	adelay->fbstate = fbstate;
 	adelay->feedbackold = *(adelay->feedback);
 	adelay->divisorold = *(adelay->divisor);
-	adelay->gainold = *(adelay->gain);
 	adelay->invertold = *(adelay->inv);
 	adelay->timeold = *(adelay->time);
 	adelay->syncold = *(adelay->sync);
-	adelay->wetdryold = *(adelay->wetdry);
+	adelay->wetdryold = wetdry;
+	adelay->gainold = gain;
 	adelay->delaytimeold = *(adelay->delaytime);
 	adelay->delaysamplesold = delaysamples;
+
 	if (recalc) {
 		tmp = adelay->active;
 		adelay->active = adelay->next;

@@ -46,7 +46,7 @@ LuaProc::LuaProc (AudioEngine& engine,
                   Session& session,
                   const std::string &script)
 	: Plugin (engine, session)
-	, _mempool ("LuaProc", 2097152)
+	, _mempool ("LuaProc", 3145728)
 #ifdef USE_TLSF
 	, lua (lua_newstate (&PBD::TLSF::lalloc, &_mempool))
 #elif defined USE_MALLOC
@@ -61,6 +61,7 @@ LuaProc::LuaProc (AudioEngine& engine,
 	, _designated_bypass_port (UINT32_MAX)
 	, _control_data (0)
 	, _shadow_data (0)
+	, _configured (false)
 	, _has_midi_input (false)
 	, _has_midi_output (false)
 {
@@ -76,7 +77,7 @@ LuaProc::LuaProc (AudioEngine& engine,
 
 LuaProc::LuaProc (const LuaProc &other)
 	: Plugin (other)
-	, _mempool ("LuaProc", 2097152)
+	, _mempool ("LuaProc", 3145728)
 #ifdef USE_TLSF
 	, lua (lua_newstate (&PBD::TLSF::lalloc, &_mempool))
 #elif defined USE_MALLOC
@@ -91,6 +92,7 @@ LuaProc::LuaProc (const LuaProc &other)
 	, _designated_bypass_port (UINT32_MAX)
 	, _control_data (0)
 	, _shadow_data (0)
+	, _configured (false)
 	, _has_midi_input (false)
 	, _has_midi_output (false)
 {
@@ -142,10 +144,13 @@ LuaProc::init ()
 
 	luabridge::getGlobalNamespace (L)
 		.beginNamespace ("Ardour")
-		.beginClass <LuaProc> ("LuaProc")
+		.deriveClass <LuaProc, PBD::StatefulDestructible> ("LuaProc")
 		.addFunction ("queue_draw", &LuaProc::queue_draw)
 		.addFunction ("shmem", &LuaProc::instance_shm)
 		.addFunction ("table", &LuaProc::instance_ref)
+		.addFunction ("route", &LuaProc::route)
+		.addFunction ("unique_id", &LuaProc::unique_id)
+		.addFunction ("name", &LuaProc::name)
 		.endClass ()
 		.endNamespace ();
 
@@ -163,6 +168,12 @@ LuaProc::init ()
 	lua.do_command ("for n in pairs(_G) do print(n) end print ('----')"); // print global env
 #endif
 	lua.do_command ("function ardour () end");
+}
+
+boost::weak_ptr<Route>
+LuaProc::route () const
+{
+	return static_cast<Route*>(_owner)->weakroute ();
 }
 
 void
@@ -526,7 +537,7 @@ LuaProc::configure_io (ChanCount in, ChanCount out)
 	_info->n_outputs = _selected_out;
 
 	// configure the DSP if needed
-	if (in != _configured_in || out != _configured_out) {
+	if (in != _configured_in || out != _configured_out || !_configured) {
 		lua_State* L = lua.getState ();
 		luabridge::LuaRef lua_dsp_configure = luabridge::getGlobal (L, "dsp_configure");
 		if (lua_dsp_configure.type () == LUA_TFUNCTION) {
@@ -563,6 +574,7 @@ LuaProc::configure_io (ChanCount in, ChanCount out)
 					_info->n_inputs = lin;
 					_info->n_outputs = lout;
 				}
+				_configured = true;
 			} catch (luabridge::LuaException const& e) {
 				PBD::error << "LuaException: " << e.what () << "\n";
 #ifndef NDEBUG
@@ -655,7 +667,7 @@ LuaProc::connect_and_run (BufferSet& bufs,
 				if (valid) {
 					for (MidiBuffer::iterator m = bufs.get_midi(idx).begin();
 							m != bufs.get_midi(idx).end(); ++m, ++e) {
-						const Evoral::MIDIEvent<framepos_t> ev(*m, false);
+						const Evoral::Event<framepos_t> ev(*m, false);
 						luabridge::LuaRef lua_midi_data (luabridge::newTable (L));
 						const uint8_t* data = ev.buffer();
 						for (uint32_t i = 0; i < ev.size(); ++i) {
@@ -664,6 +676,8 @@ LuaProc::connect_and_run (BufferSet& bufs,
 						luabridge::LuaRef lua_midi_event (luabridge::newTable (L));
 						lua_midi_event["time"] = 1 + (*m).time();
 						lua_midi_event["data"] = lua_midi_data;
+						lua_midi_event["bytes"] = data;
+						lua_midi_event["size"] = ev.size();
 						lua_midi_src_tbl[e] = lua_midi_event;
 					}
 				}
@@ -1015,6 +1029,7 @@ LuaProc::setup_lua_inline_gui (LuaState *lua_gui)
 	LuaBindings::stddef (LG);
 	LuaBindings::common (LG);
 	LuaBindings::dsp (LG);
+	LuaBindings::osc (LG);
 
 	lua_gui->Print.connect (sigc::mem_fun (*this, &LuaProc::lua_print));
 	lua_gui->do_command ("function ardour () end");
@@ -1033,7 +1048,7 @@ LuaProc::setup_lua_inline_gui (LuaState *lua_gui)
 	luabridge::push <LuaProc *> (LG, this);
 	lua_setglobal (LG, "self");
 
-	luabridge::push <float *> (LG, _shadow_data);
+	luabridge::push <float *> (LG, _control_data);
 	lua_setglobal (LG, "CtrlPorts");
 }
 ////////////////////////////////////////////////////////////////////////////////

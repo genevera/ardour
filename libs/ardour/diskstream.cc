@@ -148,6 +148,12 @@ Diskstream::~Diskstream ()
         delete deprecated_io_node;
 }
 
+bool
+Diskstream::non_layered () const
+{
+	return _session.config.get_layered_record_mode();
+}
+
 void
 Diskstream::set_track (Track* t)
 {
@@ -260,6 +266,16 @@ Diskstream::set_capture_offset ()
 		_capture_offset = 0;
 		break;
 	}
+#ifdef MIXBUS
+	framecnt_t port_offset;
+	if (_track->mixbus_internal_bounce (port_offset)) {
+		/* _capture_offset may become negative, but the sum
+		 * _capture_offset + existing_material_offset
+		 * will be postive.
+		 */
+		_capture_offset -= port_offset;
+	}
+#endif
 
         DEBUG_TRACE (DEBUG::CaptureAlignment, string_compose ("%1: using IO latency, capture offset set to %2 with style = %3\n", name(), _capture_offset, enum_2_string (_alignment_style)));
 }

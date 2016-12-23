@@ -653,14 +653,17 @@ make_string(const unsigned char *buf, const size_t buffer_length, uint32_t len)
 int
 smf_event_is_textual(const smf_event_t *event)
 {
-	if (!smf_event_is_metadata(event))
+	if (!smf_event_is_metadata(event)) {
 		return (0);
+	}
 
-	if (event->midi_buffer_length < 4)
+	if (event->midi_buffer_length < 4) {
 		return (0);
+	}
 
-	if (event->midi_buffer[3] < 1 || event->midi_buffer[3] > 9)
+	if (event->midi_buffer[1] < 1 || event->midi_buffer[1] > 7) {
 		return (0);
+	}
 
 	return (1);
 }
@@ -676,11 +679,8 @@ smf_event_extract_text(const smf_event_t *event)
 	uint32_t string_length = 0;
 	uint32_t length_length = 0;
 
-	if (!smf_event_is_textual(event))
-		return (NULL);
-
-	if (event->midi_buffer_length < 3) {
-		g_critical("smf_event_extract_text: truncated MIDI message.");
+	if (!smf_event_is_textual(event)) {
+		g_warning ("smf_event_extract_text: event is not textual.");
 		return (NULL);
 	}
 
@@ -812,8 +812,22 @@ parse_mtrk_chunk(smf_track_t *track)
 			break;
 		}
 
-		if (event_is_end_of_track(event))
+		if (event_is_end_of_track(event)) {
 			break;
+		}
+
+		if (smf_event_is_metadata (event)) {
+			switch (event->midi_buffer[1]) {
+			case 0x03:
+				track->name = smf_event_extract_text (event);
+				break;
+			case 0x04:
+				track->instrument = smf_event_extract_text (event);
+				break;
+			default:
+				break;
+			}
+		}
 	}
 
 	track->file_buffer = NULL;

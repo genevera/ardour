@@ -52,8 +52,11 @@
 #include "ardour_ui.h"
 #include "engine_dialog.h"
 #include "gui_thread.h"
+#include "ui_config.h"
+#include "public_editor.h"
 #include "utils.h"
 #include "pbd/i18n.h"
+#include "splash.h"
 
 using namespace std;
 using namespace Gtk;
@@ -276,6 +279,7 @@ EngineControl::EngineControl ()
 	start_stop_button.set_sensitive (false);
 	start_stop_button.set_name ("generic button");
 	start_stop_button.set_can_focus(true);
+	start_stop_button.set_can_default(true);
 
 	update_devices_button.signal_clicked.connect (mem_fun (*this, &EngineControl::update_devices_button_clicked));
 	update_devices_button.set_sensitive (false);
@@ -286,9 +290,6 @@ EngineControl::EngineControl ()
 	use_buffered_io_button.set_sensitive (false);
 	use_buffered_io_button.set_name ("generic button");
 	use_buffered_io_button.set_can_focus(true);
-
-	cancel_button = add_button (Gtk::Stock::CLOSE, Gtk::RESPONSE_CANCEL);
-	ok_button = add_button (Gtk::Stock::OK, Gtk::RESPONSE_OK);
 
 	/* Pick up any existing audio setup configuration, if appropriate */
 
@@ -415,12 +416,28 @@ void
 EngineControl::on_show ()
 {
 	ArdourDialog::on_show ();
+	if (Splash::instance()) {
+		Splash::instance()->hide ();
+	}
 	if (!ARDOUR::AudioEngine::instance()->current_backend() || !ARDOUR::AudioEngine::instance()->running()) {
 		// re-check _have_control (jackd running) see #6041
 		backend_changed ();
 	}
 	device_changed ();
-	ok_button->grab_focus();
+	start_stop_button.grab_focus();
+}
+
+void
+EngineControl::on_map ()
+{
+	if (!ARDOUR_UI::instance()->session_loaded && !PublicEditor::_instance) {
+		set_type_hint (Gdk::WINDOW_TYPE_HINT_NORMAL);
+	} else if (UIConfiguration::instance().get_all_floating_windows_are_dialogs()) {
+		set_type_hint (Gdk::WINDOW_TYPE_HINT_DIALOG);
+	} else {
+		set_type_hint (Gdk::WINDOW_TYPE_HINT_UTILITY);
+	}
+	ArdourDialog::on_map ();
 }
 
 bool
@@ -457,49 +474,6 @@ EngineControl::stop_engine (bool for_latency)
 		return false;
 	}
 	return true;
-}
-
-void
-EngineControl::on_response (int response_id)
-{
-	ArdourDialog::on_response (response_id);
-
-	switch (response_id) {
-	case RESPONSE_OK:
-		if (!start_engine()) {
-			return;
-		} else {
-			hide();
-		}
-#ifdef PLATFORM_WINDOWS
-
-		// But if there's no session open, this can produce
-		// a long gap when nothing appears to be happening.
-		// Let's show the splash image while we're waiting.
-		if (!ARDOUR_COMMAND_LINE::no_splash) {
-			if (ARDOUR_UI::instance()) {
-				if (!ARDOUR_UI::instance()->session_loaded) {
-					ARDOUR_UI::instance()->show_splash();
-				}
-			}
-		}
-#endif
-		break;
-	case RESPONSE_DELETE_EVENT: {
-		GdkEventButton ev;
-		ev.type = GDK_BUTTON_PRESS;
-		ev.button = 1;
-		on_delete_event((GdkEventAny*)&ev);
-		break;
-	}
-	case RESPONSE_CANCEL:
-		if (ARDOUR_UI::instance() && ARDOUR_UI::instance()->session_loaded) {
-			ARDOUR_UI::instance()->check_audioengine(*this);
-		}
-	// fall through
-	default:
-		hide();
-	}
 }
 
 void
@@ -798,7 +772,6 @@ EngineControl::update_sensitivity ()
 {
 	boost::shared_ptr<ARDOUR::AudioBackend> backend = ARDOUR::AudioEngine::instance()->current_backend();
 	if (!backend) {
-		ok_button->set_sensitive (false);
 		start_stop_button.set_sensitive (false);
 		return;
 	}
@@ -852,11 +825,17 @@ EngineControl::update_sensitivity ()
 	}
 
 	if (get_popdown_string_count (sample_rate_combo) > 0) {
+		bool allow_to_set_rate = false;
 		if (!ARDOUR::AudioEngine::instance()->running()) {
-			sample_rate_combo.set_sensitive (true);
-		} else {
-			sample_rate_combo.set_sensitive (false);
+			if (!ARDOUR_UI::instance()->session_loaded) {
+				// engine is not running, no session loaded -> anything goes.
+				allow_to_set_rate = true;
+			} else if (_desired_sample_rate > 0 && get_rate () != _desired_sample_rate) {
+				// only allow to change if the current setting is not the native session rate.
+				allow_to_set_rate = true;
+			}
 		}
+		sample_rate_combo.set_sensitive (allow_to_set_rate);
 	} else {
 		sample_rate_combo.set_sensitive (false);
 		valid = false;
@@ -917,12 +896,6 @@ EngineControl::update_sensitivity ()
 		} else {
 			driver_combo.set_sensitive (false);
 		}
-	}
-
-	if (valid || !_have_control) {
-		ok_button->set_sensitive (true);
-	} else {
-		ok_button->set_sensitive (false);
 	}
 }
 
@@ -1392,7 +1365,10 @@ EngineControl::set_samplerate_popdown_strings ()
 	set_popdown_strings (sample_rate_combo, s);
 
 	if (!s.empty()) {
-		if (desired.empty ()) {
+		if (ARDOUR::AudioEngine::instance()->running()) {
+			sample_rate_combo.set_active_text (rate_as_string (backend->sample_rate()));
+		}
+		else if (desired.empty ()) {
 			float new_active_sr = backend->default_sample_rate ();
 
 			if (std::find (sr.begin (), sr.end (), new_active_sr) == sr.end ()) {
@@ -1583,6 +1559,24 @@ void
 EngineControl::input_device_changed ()
 {
 	DEBUG_ECONTROL ("input_device_changed");
+
+	boost::shared_ptr<ARDOUR::AudioBackend> backend = ARDOUR::AudioEngine::instance()->current_backend();
+	if (backend && backend->match_input_output_devices_or_none ()) {
+		const std::string& dev_none = ARDOUR::AudioBackend::get_standard_device_name (ARDOUR::AudioBackend::DeviceNone);
+
+		if (get_output_device_name () != dev_none
+				&& get_input_device_name () != dev_none
+				&& get_input_device_name () != get_output_device_name ()) {
+			block_changed_signals ();
+			if (contains_value (output_device_combo, get_input_device_name ())) {
+				output_device_combo.set_active_text (get_input_device_name ());
+			} else {
+				assert (contains_value (output_device_combo, dev_none));
+				output_device_combo.set_active_text (dev_none);
+			}
+			unblock_changed_signals ();
+		}
+	}
 	device_changed ();
 }
 
@@ -1590,6 +1584,23 @@ void
 EngineControl::output_device_changed ()
 {
 	DEBUG_ECONTROL ("output_device_changed");
+	boost::shared_ptr<ARDOUR::AudioBackend> backend = ARDOUR::AudioEngine::instance()->current_backend();
+	if (backend && backend->match_input_output_devices_or_none ()) {
+		const std::string& dev_none = ARDOUR::AudioBackend::get_standard_device_name (ARDOUR::AudioBackend::DeviceNone);
+
+		if (get_input_device_name () != dev_none
+				&& get_input_device_name () != dev_none
+				&& get_input_device_name () != get_output_device_name ()) {
+			block_changed_signals ();
+			if (contains_value (input_device_combo, get_output_device_name ())) {
+				input_device_combo.set_active_text (get_output_device_name ());
+			} else {
+				assert (contains_value (input_device_combo, dev_none));
+				input_device_combo.set_active_text (dev_none);
+			}
+			unblock_changed_signals ();
+		}
+	}
 	device_changed ();
 }
 
@@ -2714,7 +2725,16 @@ EngineControl::start_stop_button_clicked ()
 	if (ARDOUR::AudioEngine::instance()->running()) {
 		ARDOUR::AudioEngine::instance()->stop ();
 	} else {
+		if (!ARDOUR_UI::instance()->session_loaded) {
+			hide ();
+		}
 		start_engine ();
+		if (!ARDOUR_UI::instance()->session_loaded) {
+			ArdourDialog::on_response (RESPONSE_OK);
+			if (Splash::instance()) {
+				Splash::instance()->pop_front ();
+			}
+		}
 	}
 }
 
@@ -2779,12 +2799,8 @@ void
 EngineControl::on_switch_page (GtkNotebookPage*, guint page_num)
 {
 	if (page_num == 0) {
-		cancel_button->set_sensitive (true);
 		_measure_midi.reset();
 		update_sensitivity ();
-	} else {
-		cancel_button->set_sensitive (false);
-		ok_button->set_sensitive (false);
 	}
 
 	if (page_num == midi_tab) {
@@ -3125,7 +3141,16 @@ EngineControl::connect_disconnect_click()
 	if (ARDOUR::AudioEngine::instance()->running()) {
 		stop_engine ();
 	} else {
+		if (!ARDOUR_UI::instance()->session_loaded) {
+			hide ();
+		}
 		start_engine ();
+		if (!ARDOUR_UI::instance()->session_loaded) {
+			ArdourDialog::on_response (RESPONSE_OK);
+			if (Splash::instance()) {
+				Splash::instance()->pop_front ();
+			}
+		}
 	}
 }
 

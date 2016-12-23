@@ -31,13 +31,14 @@ public:
 		};
 	}
 
-	uint32_t midi_event_type(uint8_t status) const {
-		status &= 0xf0;
-		switch (status) {
-		case MIDI_CMD_CONTROL:          return CONTROL;
-		case MIDI_CMD_COMMON_SYSEX:     return SYSEX;
-		default:                        return 0;
-		};
+	virtual ParameterType midi_parameter_type(const uint8_t* buf, uint32_t len) const {
+		switch (buf[0] & 0xF0) {
+		case MIDI_CMD_CONTROL:      return CONTROL;
+		case MIDI_CMD_COMMON_SYSEX: return SYSEX;
+		case MIDI_CMD_NOTE_ON:      return NOTE;
+		case MIDI_CMD_NOTE_OFF:     return NOTE;
+		default: return 0;
+		}
 	}
 
 	ParameterDescriptor descriptor(const Parameter& param) const {
@@ -51,6 +52,7 @@ template<typename Time>
 class MySequence : public Sequence<Time> {
 public:
 	MySequence(DummyTypeMap&map) : Sequence<Time>(map) {}
+	MySequence(const MySequence& copy) : ControlSet(copy), Sequence<Time>(copy) {}
 
 	virtual bool find_next_event(double start, double end, ControlEvent& ev, bool only_active) const { return false; }
 
@@ -95,7 +97,7 @@ public:
 
 	virtual uint32_t write(Time time, EventType type, uint32_t size, const uint8_t* buf) {
 		if (type == cc_type) {
-			CPPUNIT_ASSERT(size == 3);
+			CPPUNIT_ASSERT_EQUAL((uint32_t)3, size);
 			events.push_back(std::make_pair(time, buf[2]));
 		}
 		return size;
@@ -110,6 +112,7 @@ class SequenceTest : public CppUnit::TestFixture
 {
 	CPPUNIT_TEST_SUITE (SequenceTest);
 	CPPUNIT_TEST (createTest);
+	CPPUNIT_TEST (copyTest);
 	CPPUNIT_TEST (preserveEventOrderingTest);
 	CPPUNIT_TEST (iteratorSeekTest);
 	CPPUNIT_TEST (controlInterpolationTest);
@@ -139,6 +142,7 @@ public:
 	}
 
 	void createTest ();
+	void copyTest ();
 	void preserveEventOrderingTest ();
 	void iteratorSeekTest ();
 	void controlInterpolationTest ();

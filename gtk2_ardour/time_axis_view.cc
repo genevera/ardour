@@ -332,6 +332,10 @@ TimeAxisView::show_at (double y, int& nth, VBox *parent)
 		}
 	}
 
+	for (list<GhostRegion*>::iterator i = ghosts.begin(); i != ghosts.end(); ++i) {
+		(*i)->set_height ();
+	}
+
 	/* put separator at the bottom of this time axis view */
 
 	_canvas_separator->set (ArdourCanvas::Duple(0, height), ArdourCanvas::Duple(ArdourCanvas::COORD_MAX, height));
@@ -738,7 +742,10 @@ TimeAxisView::popup_display_menu (guint32 when)
 	conditionally_add_to_selection ();
 
 	build_display_menu ();
-	display_menu->popup (1, when);
+
+	if (!display_menu->items().empty()) {
+		display_menu->popup (1, when);
+	}
 }
 
 void
@@ -748,7 +755,7 @@ TimeAxisView::set_selected (bool yn)
 		return;
 	}
 
-	Selectable::set_selected (yn);
+	AxisView::set_selected (yn);
 
 	if (_selected) {
 		time_axis_frame.set_shadow_type (Gtk::SHADOW_IN);

@@ -428,7 +428,7 @@ ClockOption::set_state_from_config ()
 	if (!Timecode::parse_timecode_format(_get(), TC)) {
 		_clock.set (0, true);
 	}
-	TC.rate = _session->frames_per_timecode_frame();
+	TC.rate = _session->samples_per_timecode_frame();
 	TC.drop = _session->timecode_drop_frames();
 	_session->timecode_to_sample(TC, when, false, false);
 	if (TC.negative) { when=-when; }
@@ -524,7 +524,8 @@ OptionEditor::treeview_row_selected ()
 {
 	Glib::RefPtr<Gtk::TreeSelection> selection = option_treeview.get_selection();
 	TreeModel::iterator iter = selection->get_selected();
-	if(iter) {
+
+	if (iter) {
 		TreeModel::Row row = *iter;
 		Gtk::Widget* w = row[option_columns.widget];
 		if (w) {
@@ -686,8 +687,7 @@ OptionEditorContainer::OptionEditorContainer (PBD::Configuration* c, string cons
 	hpacker.pack_start (notebook(), true, true);
 	pack_start (hpacker, true, true);
 
-	hpacker.show_all ();
-	show ();
+	show_all ();
 }
 
 OptionEditorWindow::OptionEditorWindow (PBD::Configuration* c, string const& str)

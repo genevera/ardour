@@ -23,6 +23,11 @@
 #include "pbd/configuration_variable.h"
 #include "pbd/debug.h"
 
+#if defined(_MSC_VER) && (_MSC_VER < 1800)
+// MSVC only introduced std::strtof in VS2013
+#define strtof(s, e) strtod(s, e)
+#endif
+
 using namespace std;
 using namespace PBD;
 
@@ -107,3 +112,10 @@ ConfigVariableBase::miss ()
 	// is set but to the same value as it already has
 }
 
+/* Specialisation of ConfigVariable to deal with float (-inf etc)
+ * http://stackoverflow.com/questions/23374095/should-a-stringstream-parse-infinity-as-an-infinite-value
+ */
+template<> void
+ConfigVariable<float>::set_from_string (std::string const & s) {
+	value = std::strtof (s.c_str(), NULL);
+}

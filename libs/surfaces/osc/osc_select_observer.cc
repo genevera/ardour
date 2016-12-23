@@ -29,9 +29,13 @@
 #include "ardour/solo_isolate_control.h"
 #include "ardour/solo_safe_control.h"
 #include "ardour/route.h"
+#include "ardour/send.h"
+#include "ardour/processor.h"
 
 #include "osc.h"
 #include "osc_select_observer.h"
+
+#include <glibmm.h>
 
 #include "pbd/i18n.h"
 
@@ -175,11 +179,10 @@ OSCSelectObserver::OSCSelectObserver (boost::shared_ptr<Stripable> s, lo_address
 
 OSCSelectObserver::~OSCSelectObserver ()
 {
-
 	strip_connections.drop_connections ();
 	// all strip buttons should be off and faders 0 and etc.
-	clear_strip ("/select/expand", 0);
 	if (feedback[0]) { // buttons are separate feedback
+		clear_strip ("/select/expand", 0);
 		text_message ("/select/name", " ");
 		text_message ("/select/comment", " ");
 		clear_strip ("/select/mute", 0);
@@ -251,8 +254,17 @@ OSCSelectObserver::send_init()
 			enable_message_with_id ("/select/send_enable", nsends + 1, _strip->send_enable_controllable(nsends));
 			sends = true;
 		} else if (sends) {
-			// not used by Ardour, just mixbus so in Ardour always true
-			clear_strip_with_id ("/select/send_enable", nsends + 1, 1);
+			boost::shared_ptr<Route> r = boost::dynamic_pointer_cast<Route> (_strip);
+			if (!r) {
+				// should never get here
+				clear_strip_with_id ("/select/send_enable", nsends + 1, 0);
+			}
+			boost::shared_ptr<Send> snd = boost::dynamic_pointer_cast<Send> (r->nth_send(nsends));
+			if (snd) {
+				boost::shared_ptr<Processor> proc = boost::dynamic_pointer_cast<Processor> (snd);
+				proc->ActiveChanged.connect (strip_connections, MISSING_INVALIDATOR, boost::bind (&OSCSelectObserver::send_enable, this, X_("/select/send_enable"), nsends + 1, proc), OSC::instance());
+				clear_strip_with_id ("/select/send_enable", nsends + 1, proc->enabled());
+			}
 		}
 		// this should get signalled by the route the send goes to, (TODO)
 		if (!gainmode && sends) { // if the gain control is there, this is too
@@ -543,6 +555,15 @@ OSCSelectObserver::send_gain (uint32_t id, boost::shared_ptr<PBD::Controllable> 
 }
 
 void
+OSCSelectObserver::send_enable (string path, uint32_t id, boost::shared_ptr<Processor> proc)
+{
+	// with no delay value is wrong
+	Glib::usleep(10);
+
+	clear_strip_with_id ("/select/send_enable", id, proc->enabled());
+}
+
+void
 OSCSelectObserver::text_with_id (string path, uint32_t id, string name)
 {
 	lo_message msg = lo_message_new ();
@@ -612,8 +633,12 @@ OSCSelectObserver::eq_end ()
 {
 	//need to check feedback for [13]
 	eq_connections.drop_connections ();
-	clear_strip ("/select/eq_hpf", 0);
-	clear_strip ("/select/eq_enable", 0);
+	if (_strip->eq_hpf_controllable ()) {
+		clear_strip ("/select/eq_hpf", 0);
+	}
+	if (_strip->eq_enable_controllable ()) {
+		clear_strip ("/select/eq_enable", 0);
+	}
 
 	for (uint32_t i = 1; i <= _strip->eq_band_cnt (); i++) {
 		text_with_id ("/select/eq_band_name", i, " ");

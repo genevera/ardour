@@ -56,6 +56,7 @@
 #include "meter_patterns.h"
 #include "monitor_section.h"
 #include "midi_tracer.h"
+#include "mini_timeline.h"
 #include "mixer_ui.h"
 #include "public_editor.h"
 #include "processor_box.h"
@@ -108,14 +109,13 @@ ARDOUR_UI::set_session (Session *s)
 
 	AutomationWatch::instance().set_session (s);
 
-	if (shuttle_box) {
-		shuttle_box->set_session (s);
-	}
+	shuttle_box.set_session (s);
+	mini_timeline.set_session (s);
+	time_info_box->set_session (s);
 
 	primary_clock->set_session (s);
 	secondary_clock->set_session (s);
 	big_clock->set_session (s);
-	time_info_box->set_session (s);
 	video_timeline->set_session (s);
 
 	/* sensitize menu bar options that are now valid */
@@ -223,7 +223,7 @@ ARDOUR_UI::set_session (Session *s)
 			editor_meter->set_meter (_session->master_out()->shared_peak_meter().get());
 			editor_meter->clear_meters();
 			editor_meter->set_type (_session->master_out()->meter_type());
-			editor_meter->setup_meters (30, 12, 6);
+			editor_meter->setup_meters (30, 10, 6);
 			editor_meter->show();
 			meter_box.pack_start(*editor_meter);
 		}
@@ -240,12 +240,7 @@ ARDOUR_UI::set_session (Session *s)
 		editor_meter_max_peak = -INFINITY;
 		editor_meter_peak_display.signal_button_release_event().connect (sigc::mem_fun(*this, &ARDOUR_UI::editor_meter_peak_button_release), false);
 
-		if (UIConfiguration::instance().get_show_editor_meter() && !ARDOUR::Profile->get_trx()) {
-			transport_hbox.pack_start (meter_box, false, false);
-			transport_hbox.pack_start (editor_meter_peak_display, false, false);
-			meter_box.show();
-			editor_meter_peak_display.show();
-		}
+		repack_transport_hbox ();
 	}
 
 	update_title ();

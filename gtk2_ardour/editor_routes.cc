@@ -1013,6 +1013,14 @@ EditorRoutes::sync_presentation_info_from_treeview ()
 	TreeModel::Children::iterator ri;
 	bool change = false;
 	PresentationInfo::order_t order = 0;
+	bool master_is_first = false;
+	uint32_t count = 0;
+
+	// special case master if it's got PI order 0 lets keep it there
+	if (_session->master_out() && (_session->master_out()->presentation_info().order() == 0)) {
+		order++;
+		master_is_first = true;
+	}
 
 	for (ri = rows.begin(); ri != rows.end(); ++ri) {
 
@@ -1029,17 +1037,37 @@ EditorRoutes::sync_presentation_info_from_treeview ()
 
 		stripable->presentation_info().set_hidden (!visible);
 
+		/* special case master if it's got PI order 0 lets keep it there
+		 * but still allow master to move if first non-master route has
+		 * presentation order 1
+		 */
+		if ((count == 0) && master_is_first && (stripable->presentation_info().order()  == 1)) {
+			master_is_first = false; // someone has moved master
+			order = 0;
+		}
+
+		if (stripable->is_master() && master_is_first) {
+			if (count) {
+				continue;
+			} else {
+				count++;
+				continue;
+			}
+		}
+
 		if (order != stripable->presentation_info().order()) {
 			stripable->set_presentation_order (order, false);
 			change = true;
 		}
 
 		++order;
+		++count;
 	}
 
 	if (change) {
 		DEBUG_TRACE (DEBUG::OrderKeys, "... notify PI change from editor GUI\n");
 		_session->notify_presentation_info_change ();
+		_session->set_dirty();
 	}
 }
 
@@ -1066,11 +1094,12 @@ EditorRoutes::sync_treeview_from_presentation_info ()
 	}
 
 	OrderingKeys sorted;
+	const size_t cmp_max = rows.size ();
 
 	for (TreeModel::Children::iterator ri = rows.begin(); ri != rows.end(); ++ri, ++old_order) {
 		boost::shared_ptr<Stripable> stripable = (*ri)[_columns.stripable];
 		/* use global order */
-		sorted.push_back (OrderKeys (old_order, stripable->presentation_info().order()));
+		sorted.push_back (OrderKeys (old_order, stripable, cmp_max));
 	}
 
 	SortByNewDisplayOrder cmp;
@@ -1619,8 +1648,8 @@ EditorRoutes::move_selected_tracks (bool up)
 			DEBUG_TRACE (DEBUG::OrderKeys, string_compose ("move %1 to %2\n", leading->old_order, neworder.size() - 1));
 		}
 #endif
-
 	}
+
 #ifndef NDEBUG
 	DEBUG_TRACE (DEBUG::OrderKeys, "New order after moving tracks:\n");
 	for (vector<int>::iterator i = neworder.begin(); i != neworder.end(); ++i) {

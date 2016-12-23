@@ -133,6 +133,7 @@ MixerStrip::MixerStrip (Mixer_UI& mx, Session* sess, boost::shared_ptr<Route> rt
 	, meter_point_button (_("pre"))
 	, monitor_section_button (0)
 	, midi_input_enable_button (0)
+	, _plugin_insert_cnt (0)
 	, _comment_button (_("Comments"))
 	, trim_control (ArdourKnob::default_elements, ArdourKnob::Flags (ArdourKnob::Detent | ArdourKnob::ArcToZero))
 	, _visibility (X_("mixer-element-visibility"))
@@ -152,7 +153,6 @@ MixerStrip::init ()
 	ignore_toggle = false;
 	comment_area = 0;
 	_width_owner = 0;
-	spacer = 0;
 
 	/* the length of this string determines the width of the mixer strip when it is set to `wide' */
 	longest_label = "longest label";
@@ -322,6 +322,24 @@ MixerStrip::init ()
 		global_vpacker.pack_start (name_button, Gtk::PACK_SHRINK);
 	}
 
+#ifndef MIXBUS
+	//add a spacer underneath the master bus;
+	//this fills the area that is taken up by the scrollbar on the tracks;
+	//and therefore keeps the faders "even" across the bottom
+	int scrollbar_height = 0;
+	{
+		Gtk::Window window (WINDOW_TOPLEVEL);
+		HScrollbar scrollbar;
+		window.add (scrollbar);
+		scrollbar.set_name ("MixerWindow");
+		scrollbar.ensure_style();
+		Gtk::Requisition requisition(scrollbar.size_request ());
+		scrollbar_height = requisition.height;
+	}
+	spacer.set_size_request (-1, scrollbar_height);
+	global_vpacker.pack_end (spacer, false, false);
+#endif
+
 	global_frame.add (global_vpacker);
 	global_frame.set_shadow_type (Gtk::SHADOW_IN);
 	global_frame.set_name ("BaseFrame");
@@ -353,7 +371,6 @@ MixerStrip::init ()
 	number_label.signal_button_press_event().connect (sigc::mem_fun(*this, &MixerStrip::number_button_button_press), false);
 
 	name_button.signal_button_press_event().connect (sigc::mem_fun(*this, &MixerStrip::name_button_button_press), false);
-	name_button.signal_button_release_event().connect (sigc::mem_fun(*this, &MixerStrip::name_button_button_release), false);
 
 	group_button.signal_button_press_event().connect (sigc::mem_fun(*this, &MixerStrip::select_route_group), false);
 
@@ -558,15 +575,9 @@ MixerStrip::set_route (boost::shared_ptr<Route> rt)
 	}
 
 	if (_mixer_owned && route()->is_master() ) {
-
-		HScrollbar scrollbar;
-		Gtk::Requisition requisition(scrollbar.size_request ());
-		int scrollbar_height = requisition.height;
-
-		spacer = manage (new EventBox);
-		spacer->set_size_request (-1, scrollbar_height+2);
-		global_vpacker.pack_start (*spacer, false, false);
-		spacer->show();
+		spacer.show();
+	} else {
+		spacer.hide();
 	}
 
 	if (is_track()) {
@@ -918,7 +929,9 @@ MixerStrip::output_press (GdkEventButton *ev)
 		citems.push_back (SeparatorElem());
 		citems.push_back (MenuElem (_("Routing Grid"), sigc::mem_fun (*(static_cast<RouteUI*>(this)), &RouteUI::edit_output_configuration)));
 
-		output_menu.popup (1, ev->time);
+		Gtkmm2ext::anchored_menu_popup(&output_menu, &output_button, "",
+		                               1, ev->time);
+
 		break;
 	}
 
@@ -1020,7 +1033,8 @@ MixerStrip::input_press (GdkEventButton *ev)
 		citems.push_back (SeparatorElem());
 		citems.push_back (MenuElem (_("Routing Grid"), sigc::mem_fun (*(static_cast<RouteUI*>(this)), &RouteUI::edit_input_configuration)));
 
-		input_menu.popup (1, ev->time);
+		Gtkmm2ext::anchored_menu_popup(&input_menu, &input_button, "",
+		                               1, ev->time);
 
 		break;
 	}
@@ -1583,7 +1597,12 @@ MixerStrip::select_route_group (GdkEventButton *ev)
 		WeakRouteList r;
 		r.push_back (route ());
 		group_menu->build (r);
-		group_menu->menu()->popup (1, ev->time);
+
+		RouteGroup *rg = _route->route_group();
+
+		Gtkmm2ext::anchored_menu_popup(group_menu->menu(), &group_button,
+		                               rg ? rg->name() : _("No Group"),
+		                               1, ev->time);
 	}
 
 	return true;
@@ -1632,7 +1651,13 @@ MixerStrip::help_count_plugins (boost::weak_ptr<Processor> p)
 	if (!processor || !processor->display_to_user()) {
 		return;
 	}
-	if (boost::dynamic_pointer_cast<PluginInsert> (processor)) {
+	boost::shared_ptr<PluginInsert> pi = boost::dynamic_pointer_cast<PluginInsert> (processor);
+#ifdef MIXBUS
+	if (pi && pi->is_channelstrip ()) {
+		return;
+	}
+#endif
+	if (pi) {
 		++_plugin_insert_cnt;
 	}
 }
@@ -1683,6 +1708,12 @@ MixerStrip::build_route_ops_menu ()
 		items.push_back (MenuElem (_("Pin Connections..."), sigc::mem_fun (*this, &RouteUI::manage_pins)));
 	}
 
+	if (_route->the_instrument () && _route->the_instrument ()->output_streams().n_audio() > 2) {
+		// TODO ..->n_audio() > 1 && separate_output_groups) hard to check here every time.
+		items.push_back (MenuElem (_("Fan out to Busses"), sigc::bind (sigc::mem_fun (*this, &RouteUI::fan_out), true, true)));
+		items.push_back (MenuElem (_("Fan out to Tracks"), sigc::bind (sigc::mem_fun (*this, &RouteUI::fan_out), false, true)));
+	}
+
 	items.push_back (SeparatorElem());
 	items.push_back (MenuElem (_("Adjust Latency..."), sigc::mem_fun (*this, &RouteUI::adjust_latency)));
 
@@ -1718,28 +1749,19 @@ MixerStrip::build_route_ops_menu ()
 gboolean
 MixerStrip::name_button_button_press (GdkEventButton* ev)
 {
-	if (ev->button == 3) {
+	if (ev->button == 1 || ev->button == 3) {
 		list_route_operations ();
 
 		/* do not allow rename if the track is record-enabled */
 		rename_menu_item->set_sensitive (!is_track() || !track()->rec_enable_control()->get_value());
-		route_ops_menu->popup (1, ev->time);
+		if (ev->button == 1) {
+			Gtkmm2ext::anchored_menu_popup(route_ops_menu, &name_button, "",
+			                               1, ev->time);
+		} else {
+			route_ops_menu->popup (3, ev->time);
+		}
 
 		return true;
-	}
-
-	return false;
-}
-
-gboolean
-MixerStrip::name_button_button_release (GdkEventButton* ev)
-{
-	if (ev->button == 1) {
-		list_route_operations ();
-
-		/* do not allow rename if the track is record-enabled */
-		rename_menu_item->set_sensitive (!is_track() || !track()->rec_enable_control()->get_value());
-		route_ops_menu->popup (1, ev->time);
 	}
 
 	return false;

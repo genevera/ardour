@@ -48,7 +48,7 @@ TempoDialog::TempoDialog (TempoMap& map, framepos_t frame, const string&)
 	Tempo tempo (map.tempo_at_frame (frame));
 	Timecode::BBT_Time when (map.bbt_at_frame (frame));
 
-	init (when, tempo.beats_per_minute(), tempo.note_type(), TempoSection::Constant, true, MusicTime);
+	init (when, tempo.note_types_per_minute(), tempo.note_type(), TempoSection::Constant, true, MusicTime);
 }
 
 TempoDialog::TempoDialog (TempoMap& map, TempoSection& section, const string&)
@@ -63,11 +63,11 @@ TempoDialog::TempoDialog (TempoMap& map, TempoSection& section, const string&)
 	, tap_tempo_button (_("Tap tempo"))
 {
 	Timecode::BBT_Time when (map.bbt_at_frame (section.frame()));
-	init (when, section.beats_per_minute(), section.note_type(), section.type(), section.movable(), section.position_lock_style());
+	init (when, section.note_types_per_minute(), section.note_type(), section.type(), section.initial(), section.position_lock_style());
 }
 
 void
-TempoDialog::init (const Timecode::BBT_Time& when, double bpm, double note_type, TempoSection::Type type, bool movable, PositionLockStyle style)
+TempoDialog::init (const Timecode::BBT_Time& when, double bpm, double note_type, TempoSection::Type type, bool initial, PositionLockStyle style)
 {
 	vector<string> strings;
 	NoteTypes::iterator x;
@@ -177,7 +177,7 @@ TempoDialog::init (const Timecode::BBT_Time& when, double bpm, double note_type,
 	snprintf (buf, sizeof (buf), "%" PRIu32, when.beats);
 	when_beat_entry.set_text (buf);
 
-	if (movable) {
+	if (!initial) {
 		when_bar_entry.set_width_chars(4);
 		when_beat_entry.set_width_chars (4);
 		when_bar_entry.set_alignment (1.0);
@@ -422,7 +422,7 @@ MeterDialog::MeterDialog (TempoMap& map, framepos_t frame, const string&)
 	Timecode::BBT_Time when (map.bbt_at_frame (frame));
 	Meter meter (map.meter_at_frame (frame));
 
-	init (when, meter.divisions_per_bar(), meter.note_divisor(), true, MusicTime);
+	init (when, meter.divisions_per_bar(), meter.note_divisor(), false, MusicTime);
 }
 
 MeterDialog::MeterDialog (TempoMap& map, MeterSection& section, const string&)
@@ -430,11 +430,11 @@ MeterDialog::MeterDialog (TempoMap& map, MeterSection& section, const string&)
 {
 	Timecode::BBT_Time when (map.bbt_at_frame (section.frame()));
 
-	init (when, section.divisions_per_bar(), section.note_divisor(), section.movable(), section.position_lock_style());
+	init (when, section.divisions_per_bar(), section.note_divisor(), section.initial(), section.position_lock_style());
 }
 
 void
-MeterDialog::init (const Timecode::BBT_Time& when, double bpb, double divisor, bool movable, PositionLockStyle style)
+MeterDialog::init (const Timecode::BBT_Time& when, double bpb, double divisor, bool initial, PositionLockStyle style)
 {
 	char buf[64];
 	vector<string> strings;
@@ -510,7 +510,7 @@ MeterDialog::init (const Timecode::BBT_Time& when, double bpb, double divisor, b
 	when_bar_entry.set_text (buf);
 	when_bar_entry.set_alignment (1.0);
 
-	if (movable) {
+	if (!initial) {
 		Label* when_label = manage (new Label(_("Meter begins at bar:"), ALIGN_LEFT, ALIGN_CENTER));
 
 		table->attach (*when_label, 0, 1, 2, 3, FILL | EXPAND, FILL | EXPAND);

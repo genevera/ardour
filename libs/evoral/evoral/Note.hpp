@@ -20,11 +20,12 @@
 #define EVORAL_NOTE_HPP
 
 #include <algorithm>
+#include <assert.h>
 #include <glib.h>
 #include <stdint.h>
 
 #include "evoral/visibility.h"
-#include "evoral/MIDIEvent.hpp"
+#include "evoral/Event.hpp"
 
 namespace Evoral {
 
@@ -42,8 +43,6 @@ public:
 	Note(uint8_t chan=0, Time time=Time(), Time len=Time(), uint8_t note=0, uint8_t vel=0x40);
 	Note(const Note<Time>& copy);
 	~Note();
-
-	const Note<Time>& operator=(const Note<Time>& copy);
 
 	inline bool operator==(const Note<Time>& other) {
 		return time() == other.time() &&
@@ -69,6 +68,8 @@ public:
 	}
 
 private:
+	const Note<Time>& operator=(const Note<Time>& copy);  // undefined (unsafe)
+
 	inline int clamp(int val, int low, int high) {
 		return std::min (std::max (val, low), high);
 	}
@@ -105,8 +106,8 @@ public:
 
 private:
 	// Event buffers are self-contained
-	MIDIEvent<Time> _on_event;
-	MIDIEvent<Time> _off_event;
+	Event<Time> _on_event;
+	Event<Time> _off_event;
 };
 
 template<typename Time>

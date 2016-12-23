@@ -69,12 +69,13 @@ using namespace PBD;
 
 MidiTrack::MidiTrack (Session& sess, string name, TrackMode mode)
 	: Track (sess, name, PresentationInfo::MidiTrack, mode, DataType::MIDI)
-	, _immediate_events(1024) // FIXME: size?
+	, _immediate_events(6096) // FIXME: size?
 	, _step_edit_ring_buffer(64) // FIXME: size?
 	, _note_mode(Sustained)
 	, _step_editing (false)
 	, _input_active (true)
 {
+	_session.SessionLoaded.connect_same_thread (*this, boost::bind (&MidiTrack::restore_controls, this));
 }
 
 MidiTrack::~MidiTrack ()
@@ -138,11 +139,13 @@ MidiTrack::set_diskstream (boost::shared_ptr<Diskstream> ds)
 	mds->reset_tracker ();
 
 	_diskstream->set_track (this);
+#ifdef XXX_OLD_DESTRUCTIVE_API_XXX
 	if (Profile->get_trx()) {
 		_diskstream->set_destructive (false);
 	} else {
 		_diskstream->set_destructive (_mode == Destructive);
 	}
+#endif
 	_diskstream->set_record_enabled (false);
 
 	_diskstream_data_recorded_connection.disconnect ();
@@ -266,6 +269,14 @@ MidiTrack::state(bool full_state)
 	root.add_property ("step-editing", (_step_editing ? "yes" : "no"));
 	root.add_property ("input-active", (_input_active ? "yes" : "no"));
 
+	for (Controls::const_iterator c = _controls.begin(); c != _controls.end(); ++c) {
+		if (boost::dynamic_pointer_cast<MidiTrack::MidiControl>(c->second)) {
+			boost::shared_ptr<AutomationControl> ac = boost::dynamic_pointer_cast<AutomationControl> (c->second);
+			assert (ac);
+			root.add_child_nocopy (ac->get_state ());
+		}
+	}
+
 	return root;
 }
 
@@ -335,11 +346,23 @@ MidiTrack::set_state_part_two ()
 }
 
 void
+MidiTrack::restore_controls ()
+{
+	// TODO order events (CC before PGM to set banks)
+	for (Controls::const_iterator c = _controls.begin(); c != _controls.end(); ++c) {
+		boost::shared_ptr<MidiTrack::MidiControl> mctrl = boost::dynamic_pointer_cast<MidiTrack::MidiControl>(c->second);
+		if (mctrl) {
+			mctrl->restore_value();
+		}
+	}
+}
+
+void
 MidiTrack::update_controls(const BufferSet& bufs)
 {
 	const MidiBuffer& buf = bufs.get_midi(0);
 	for (MidiBuffer::const_iterator e = buf.begin(); e != buf.end(); ++e) {
-		const Evoral::MIDIEvent<framepos_t>&     ev      = *e;
+		const Evoral::Event<framepos_t>&         ev      = *e;
 		const Evoral::Parameter                  param   = midi_parameter(ev.buffer(), ev.size());
 		const boost::shared_ptr<Evoral::Control> control = this->control(param);
 		if (control) {
@@ -549,7 +572,7 @@ MidiTrack::push_midi_input_to_step_edit_ringbuffer (framecnt_t nframes)
 
 		for (MidiBuffer::const_iterator e = mb->begin(); e != mb->end(); ++e) {
 
-			const Evoral::MIDIEvent<framepos_t> ev(*e, false);
+			const Evoral::Event<framepos_t> ev(*e, false);
 
 			/* note on, since for step edit, note length is determined
 			   elsewhere
@@ -557,7 +580,7 @@ MidiTrack::push_midi_input_to_step_edit_ringbuffer (framecnt_t nframes)
 
 			if (ev.is_note_on()) {
 				/* we don't care about the time for this purpose */
-				_step_edit_ring_buffer.write (0, ev.type(), ev.size(), ev.buffer());
+				_step_edit_ring_buffer.write (0, ev.event_type(), ev.size(), ev.buffer());
 			}
 		}
 	}
@@ -689,8 +712,7 @@ MidiTrack::write_immediate_event(size_t size, const uint8_t* buf)
 		cerr << "WARNING: Ignoring illegal immediate MIDI event" << endl;
 		return false;
 	}
-	const uint32_t type = midi_parameter_type(buf[0]);
-	return (_immediate_events.write (0, type, size, buf) == size);
+	return (_immediate_events.write (0, Evoral::MIDI_EVENT, size, buf) == size);
 }
 
 void
@@ -701,6 +723,7 @@ MidiTrack::set_parameter_automation_state (Evoral::Parameter param, AutoState st
 	case MidiPgmChangeAutomation:
 	case MidiPitchBenderAutomation:
 	case MidiChannelPressureAutomation:
+	case MidiNotePressureAutomation:
 	case MidiSystemExclusiveAutomation:
 		/* The track control for MIDI parameters is for immediate events to act
 		   as a control surface, write/touch for them is not currently
@@ -709,6 +732,12 @@ MidiTrack::set_parameter_automation_state (Evoral::Parameter param, AutoState st
 	default:
 		Automatable::set_parameter_automation_state(param, state);
 	}
+}
+
+void
+MidiTrack::MidiControl::restore_value ()
+{
+	actually_set_value (get_value(), Controllable::NoGroup);
 }
 
 void
@@ -755,6 +784,12 @@ MidiTrack::MidiControl::actually_set_value (double val, PBD::Controllable::Group
 			size = 2;
 			ev[0] += MIDI_CMD_CHANNEL_PRESSURE;
 			ev[1] = int(val);
+			break;
+
+		case MidiNotePressureAutomation:
+			ev[0] += MIDI_CMD_NOTE_PRESSURE;
+			ev[1] = parameter.id();
+			ev[2] = int(val);
 			break;
 
 		case MidiPitchBenderAutomation:

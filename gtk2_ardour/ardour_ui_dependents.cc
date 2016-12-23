@@ -43,6 +43,7 @@
 #include "splash.h"
 #include "rc_option_editor.h"
 #include "route_params_ui.h"
+#include "time_info_box.h"
 #include "opts.h"
 #include "utils.h"
 
@@ -187,7 +188,7 @@ ARDOUR_UI::idle_ask_about_quit ()
 	} else {
 		/* no session or session not dirty, but still ask anyway */
 
-		Gtk::MessageDialog msg (string_compose ("Quit %1?", PROGRAM_NAME),
+		Gtk::MessageDialog msg (string_compose (_("Quit %1?"), PROGRAM_NAME),
 		                        false, /* no markup */
 		                        Gtk::MESSAGE_INFO,
 		                        Gtk::BUTTONS_YES_NO,
@@ -237,6 +238,7 @@ ARDOUR_UI::setup_windows ()
 
 	keyboard->setup_keybindings ();
 
+	_tabs.set_show_border(false);
 	_tabs.signal_switch_page().connect (sigc::mem_fun (*this, &ARDOUR_UI::tabs_switch));
 	_tabs.signal_page_added().connect (sigc::mem_fun (*this, &ARDOUR_UI::tabs_page_added));
 	_tabs.signal_page_removed().connect (sigc::mem_fun (*this, &ARDOUR_UI::tabs_page_removed));
@@ -270,6 +272,7 @@ ARDOUR_UI::setup_windows ()
 	mixer->add_to_notebook (_tabs, _("Mixer"));
 	editor->add_to_notebook (_tabs, _("Editor"));
 
+	time_info_box = new TimeInfoBox (false);
 	/* all other dialogs are created conditionally */
 
 	we_have_dependents ();
@@ -314,9 +317,9 @@ ARDOUR_UI::setup_windows ()
 		} else {
 			action_script_call_btn[i].set_visual_state (Gtkmm2ext::VisualState (action_script_call_btn[i].visual_state() | Gtkmm2ext::Insensitive));
 		}
-		const int row = i % 3;
-		const int col = i / 3;
-		action_script_table.attach (action_script_call_btn[i], col, col + 1, row, row + 1, EXPAND, EXPAND, 1, 1);
+		const int row = i % 2;
+		const int col = i / 2;
+		action_script_table.attach (action_script_call_btn[i], col, col + 1, row, row + 1, EXPAND, EXPAND, 1, 0);
 		action_script_call_btn[i].set_no_show_all ();
 	}
 	action_script_table.show ();

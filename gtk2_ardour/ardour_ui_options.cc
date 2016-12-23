@@ -306,7 +306,7 @@ ARDOUR_UI::parameter_changed (std::string p)
 		ActionManager::map_some_state ("Transport", "ToggleExternalSync", sigc::mem_fun (_session->config, &SessionConfiguration::get_external_sync));
 
 		if (!_session->config.get_external_sync()) {
-			sync_button.set_text (_("Internal"));
+			sync_button.set_text (S_("SyncSource|Int."));
 			auto_loop_button.set_sensitive (true);
 			ActionManager::get_action ("Transport", "ToggleAutoPlay")->set_sensitive (true);
 			ActionManager::get_action ("Transport", "ToggleAutoReturn")->set_sensitive (true);
@@ -403,22 +403,14 @@ ARDOUR_UI::parameter_changed (std::string p)
 		}
 	} else if (p == "waveform-gradient-depth") {
 		ArdourCanvas::WaveView::set_global_gradient_depth (UIConfiguration::instance().get_waveform_gradient_depth());
+	} else if (p == "show-mini-timeline") {
+		repack_transport_hbox ();
+	} else if (p == "show-toolbar-selclock") {
+		repack_transport_hbox ();
 	} else if (p == "show-editor-meter") {
-		bool show = UIConfiguration::instance().get_show_editor_meter();
-
-		if (editor_meter) {
-			if (meter_box.get_parent()) {
-				transport_hbox.remove (meter_box);
-				transport_hbox.remove (editor_meter_peak_display);
-			}
-
-			if (show) {
-				transport_hbox.pack_start (meter_box, false, false);
-				transport_hbox.pack_start (editor_meter_peak_display, false, false);
-				meter_box.show();
-				editor_meter_peak_display.show();
-			}
-		}
+		repack_transport_hbox ();
+	} else if (p == "show-secondary-clock") {
+		update_clock_visibility ();
 	} else if (p == "waveform-scale") {
 		ArdourCanvas::WaveView::set_global_logscaled (UIConfiguration::instance().get_waveform_scale() == Logarithmic);
 	} else if (p == "widget-prelight") {
@@ -436,13 +428,15 @@ ARDOUR_UI::parameter_changed (std::string p)
 	} else if (p == "action-table-columns") {
 		const uint32_t cols = UIConfiguration::instance().get_action_table_columns ();
 		for (int i = 0; i < 9; ++i) {
-			const int col = i / 3;
+			const int col = i / 2;
 			if (cols & (1<<col)) {
 				action_script_call_btn[i].show();
 			} else {
 				action_script_call_btn[i].hide();
 			}
 		}
+	} else if (p == "layered-record-mode") {
+		layered_button.set_active (_session->config.get_layered_record_mode ());
 	}
 }
 

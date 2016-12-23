@@ -63,7 +63,7 @@ template<typename Time>
 Sequence<Time>::const_iterator::const_iterator()
 	: _seq(NULL)
 	, _event(boost::shared_ptr< Event<Time> >(new Event<Time>()))
-	, _active_patch_change_message (0)
+	, _active_patch_change_message (NO_EVENT)
 	, _type(NIL)
 	, _is_end(true)
 	, _control_iter(_control_iters.end())
@@ -191,7 +191,7 @@ Sequence<Time>::const_iterator::const_iterator(const Sequence<Time>&            
 
 	// Allocate a new event for storing the current event in MIDI format
 	_event = boost::shared_ptr< Event<Time> >(
-		new Event<Time>(0, Time(), 4, NULL, true));
+		new Event<Time>(NO_EVENT, Time(), 4, NULL, true));
 
 	// Set event from chosen sub-iterator
 	set_event();
@@ -203,7 +203,7 @@ Sequence<Time>::const_iterator::const_iterator(const Sequence<Time>&            
 		DEBUG_TRACE(DEBUG::Sequence,
 		            string_compose("Starting at type 0x%1 : 0x%2 @ %3\n",
 		                           (int)_event->event_type(),
-		                           (int)((MIDIEvent<Time>*)_event.get())->type(),
+		                           (int)_event->buffer()[0],
 		                           _event->time()));
 	}
 }
@@ -330,13 +330,14 @@ Sequence<Time>::const_iterator::operator++()
 
 	assert(_event && _event->buffer() && _event->size() > 0);
 
-	const MIDIEvent<Time>& ev = *((MIDIEvent<Time>*)_event.get());
+	const Event<Time>& ev = *_event.get();
 
 	if (!(     ev.is_note()
 	           || ev.is_cc()
 	           || ev.is_pgm_change()
 	           || ev.is_pitch_bender()
 	           || ev.is_channel_pressure()
+	           || ev.is_poly_pressure()
 	           || ev.is_sysex()) ) {
 		cerr << "WARNING: Unknown event (type " << _type << "): " << hex
 		     << int(ev.buffer()[0]) << int(ev.buffer()[1]) << int(ev.buffer()[2]) << endl;
@@ -514,9 +515,8 @@ Sequence<Time>::Sequence(const Sequence<Time>& other)
 	assert(! _end_iter._lock);
 }
 
-/** Write the controller event pointed to by \a iter to \a ev.
- * The buffer of \a ev will be allocated or resized as necessary.
- * The event_type of \a ev should be set to the expected output type.
+/** Write the controller event pointed to by `iter` to `ev`.
+ * The buffer of `ev` will be allocated or resized as necessary.
  * \return true on success
  */
 template<typename Time>
@@ -526,15 +526,14 @@ Sequence<Time>::control_to_midi_event(
 	const ControlIterator&            iter) const
 {
 	assert(iter.list.get());
-	const uint32_t event_type = iter.list->parameter().type();
 
 	// initialize the event pointer with a new event, if necessary
 	if (!ev) {
-		ev = boost::shared_ptr< Event<Time> >(new Event<Time>(event_type, Time(), 3, NULL, true));
+		ev = boost::shared_ptr< Event<Time> >(new Event<Time>(NO_EVENT, Time(), 3, NULL, true));
 	}
 
-	uint8_t midi_type = _type_map.parameter_midi_type(iter.list->parameter());
-	ev->set_event_type(_type_map.midi_event_type(midi_type));
+	const uint8_t midi_type = _type_map.parameter_midi_type(iter.list->parameter());
+	ev->set_event_type(MIDI_EVENT);
 	ev->set_id(-1);
 	switch (midi_type) {
 	case MIDI_CMD_CONTROL:
@@ -571,6 +570,19 @@ Sequence<Time>::control_to_midi_event(
 		ev->buffer()[0] = MIDI_CMD_BENDER + iter.list->parameter().channel();
 		ev->buffer()[1] = uint16_t(iter.y) & 0x7F; // LSB
 		ev->buffer()[2] = (uint16_t(iter.y) >> 7) & 0x7F; // MSB
+		break;
+
+	case MIDI_CMD_NOTE_PRESSURE:
+		assert(iter.list.get());
+		assert(iter.list->parameter().channel() < 16);
+		assert(iter.list->parameter().id() <= INT8_MAX);
+		assert(iter.y <= INT8_MAX);
+
+		ev->set_time(Time(iter.x));
+		ev->realloc(3);
+		ev->buffer()[0] = MIDI_CMD_NOTE_PRESSURE + iter.list->parameter().channel();
+		ev->buffer()[1] = (uint8_t)iter.list->parameter().id();
+		ev->buffer()[2] = (uint8_t)iter.y;
 		break;
 
 	case MIDI_CMD_CHANNEL_PRESSURE:
@@ -888,11 +900,9 @@ Sequence<Time>::remove_sysex_unlocked (const SysExPtr sysex)
  */
 template<typename Time>
 void
-Sequence<Time>::append(const Event<Time>& event, event_id_t evid)
+Sequence<Time>::append(const Event<Time>& ev, event_id_t evid)
 {
 	WriteLock lock(write_lock());
-
-	const MIDIEvent<Time>& ev = (const MIDIEvent<Time>&)event;
 
 	assert(_notes.empty() || ev.time() >= (*_notes.rbegin())->time());
 	assert(_writing);
@@ -921,21 +931,28 @@ Sequence<Time>::append(const Event<Time>& event, event_id_t evid)
 			_bank[ev.channel()] |= ev.cc_value();
 		}
 	} else if (ev.is_cc()) {
+		const ParameterType ptype = _type_map.midi_parameter_type(ev.buffer(), ev.size());
 		append_control_unlocked(
-			Parameter(ev.event_type(), ev.channel(), ev.cc_number()),
+			Parameter(ptype, ev.channel(), ev.cc_number()),
 			ev.time(), ev.cc_value(), evid);
 	} else if (ev.is_pgm_change()) {
 		/* write a patch change with this program change and any previously set-up bank number */
-		append_patch_change_unlocked (PatchChange<Time> (ev.time(), ev.channel(), ev.pgm_number(), _bank[ev.channel()]), evid);
+		append_patch_change_unlocked (
+			PatchChange<Time> (ev.time(), ev.channel(),
+			                   ev.pgm_number(), _bank[ev.channel()]), evid);
 	} else if (ev.is_pitch_bender()) {
+		const ParameterType ptype = _type_map.midi_parameter_type(ev.buffer(), ev.size());
 		append_control_unlocked(
-			Parameter(ev.event_type(), ev.channel()),
+			Parameter(ptype, ev.channel()),
 			ev.time(), double ((0x7F & ev.pitch_bender_msb()) << 7
 			                   | (0x7F & ev.pitch_bender_lsb())),
 			evid);
+	} else if (ev.is_poly_pressure()) {
+		append_control_unlocked (Parameter (ev.event_type(), ev.channel(), ev.poly_note()), ev.time(), ev.poly_pressure(), evid);
 	} else if (ev.is_channel_pressure()) {
+		const ParameterType ptype = _type_map.midi_parameter_type(ev.buffer(), ev.size());
 		append_control_unlocked(
-			Parameter(ev.event_type(), ev.channel()),
+			Parameter(ptype, ev.channel()),
 			ev.time(), ev.channel_pressure(), evid);
 	} else if (!_type_map.type_is_midi(ev.event_type())) {
 		printf("WARNING: Sequence: Unknown event type %X: ", ev.event_type());
@@ -952,7 +969,7 @@ Sequence<Time>::append(const Event<Time>& event, event_id_t evid)
 
 template<typename Time>
 void
-Sequence<Time>::append_note_on_unlocked (const MIDIEvent<Time>& ev, event_id_t evid)
+Sequence<Time>::append_note_on_unlocked (const Event<Time>& ev, event_id_t evid)
 {
 	DEBUG_TRACE (DEBUG::Sequence, string_compose ("%1 c=%2 note %3 on @ %4 v=%5\n", this,
 	                                              (int)ev.channel(), (int)ev.note(),
@@ -984,7 +1001,7 @@ Sequence<Time>::append_note_on_unlocked (const MIDIEvent<Time>& ev, event_id_t e
 
 template<typename Time>
 void
-Sequence<Time>::append_note_off_unlocked (const MIDIEvent<Time>& ev)
+Sequence<Time>::append_note_off_unlocked (const Event<Time>& ev)
 {
 	DEBUG_TRACE (DEBUG::Sequence, string_compose ("%1 c=%2 note %3 OFF @ %4 v=%5\n",
 	                                              this, (int)ev.channel(),
@@ -1045,13 +1062,13 @@ Sequence<Time>::append_control_unlocked(const Parameter& param, Time time, doubl
 	DEBUG_TRACE (DEBUG::Sequence, string_compose ("%1 %2 @ %3 = %4 # controls: %5\n",
 	                                              this, _type_map.to_symbol(param), time, value, _controls.size()));
 	boost::shared_ptr<Control> c = control(param, true);
-	c->list()->add (time.to_double(), value);
+	c->list()->add (time.to_double(), value, true, false);
 	/* XXX control events should use IDs */
 }
 
 template<typename Time>
 void
-Sequence<Time>::append_sysex_unlocked(const MIDIEvent<Time>& ev, event_id_t /* evid */)
+Sequence<Time>::append_sysex_unlocked(const Event<Time>& ev, event_id_t /* evid */)
 {
 #ifdef DEBUG_SEQUENCE
 	cerr << this << " SysEx @ " << ev.time() << " \t= \t [ " << hex;
@@ -1060,7 +1077,7 @@ Sequence<Time>::append_sysex_unlocked(const MIDIEvent<Time>& ev, event_id_t /* e
 	} cerr << "]" << endl;
 #endif
 
-	boost::shared_ptr<MIDIEvent<Time> > event(new MIDIEvent<Time>(ev, true));
+	boost::shared_ptr< Event<Time> > event(new Event<Time>(ev, true));
 	/* XXX sysex events should use IDs */
 	_sysexes.insert(event);
 }
@@ -1201,7 +1218,7 @@ template<typename Time>
 typename Sequence<Time>::SysExes::const_iterator
 Sequence<Time>::sysex_lower_bound (Time t) const
 {
-	SysExPtr search (new Event<Time> (0, t));
+	SysExPtr search (new Event<Time> (NO_EVENT, t));
 	typename Sequence<Time>::SysExes::const_iterator i = _sysexes.lower_bound (search);
 	assert (i == _sysexes.end() || (*i)->time() >= t);
 	return i;
@@ -1236,7 +1253,7 @@ template<typename Time>
 typename Sequence<Time>::SysExes::iterator
 Sequence<Time>::sysex_lower_bound (Time t)
 {
-	SysExPtr search (new Event<Time> (0, t));
+	SysExPtr search (new Event<Time> (NO_EVENT, t));
 	typename Sequence<Time>::SysExes::iterator i = _sysexes.lower_bound (search);
 	assert (i == _sysexes.end() || (*i)->time() >= t);
 	return i;

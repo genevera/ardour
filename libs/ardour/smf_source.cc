@@ -215,6 +215,7 @@ SMFSource::read_unlocked (const Lock&                    lock,
                           framepos_t const               source_start,
                           framepos_t                     start,
                           framecnt_t                     duration,
+                          Evoral::Range<framepos_t>*     loop_range,
                           MidiStateTracker*              tracker,
                           MidiChannelFilter*             filter) const
 {
@@ -230,7 +231,6 @@ SMFSource::read_unlocked (const Lock&                    lock,
 
 	// Output parameters for read_event (which will allocate scratch in buffer as needed)
 	uint32_t ev_delta_t = 0;
-	uint32_t ev_type    = 0;
 	uint32_t ev_size    = 0;
 	uint8_t* ev_buffer  = 0;
 
@@ -276,10 +276,8 @@ SMFSource::read_unlocked (const Lock&                    lock,
 			continue;
 		}
 
-		ev_type = midi_parameter_type(ev_buffer[0]);
-
-		DEBUG_TRACE (DEBUG::MidiSourceIO, string_compose ("SMF read_unlocked delta %1, time %2, buf[0] %3, type %4\n",
-								  ev_delta_t, time, ev_buffer[0], ev_type));
+		DEBUG_TRACE (DEBUG::MidiSourceIO, string_compose ("SMF read_unlocked delta %1, time %2, buf[0] %3\n",
+								  ev_delta_t, time, ev_buffer[0]));
 
 		assert(time >= start_ticks);
 
@@ -288,9 +286,13 @@ SMFSource::read_unlocked (const Lock&                    lock,
 		*/
 		const framepos_t ev_frame_time = converter.to(Evoral::Beats::ticks_at_rate(time, ppqn())) + source_start;
 
+		if (loop_range) {
+			loop_range->squish (ev_frame_time);
+		}
+
 		if (ev_frame_time < start + duration) {
 			if (!filter || !filter->filter(ev_buffer, ev_size)) {
-				destination.write (ev_frame_time, ev_type, ev_size, ev_buffer);
+				destination.write (ev_frame_time, Evoral::MIDI_EVENT, ev_size, ev_buffer);
 				if (tracker) {
 					tracker->track(ev_buffer);
 				}
@@ -329,7 +331,7 @@ SMFSource::write_unlocked (const Lock&                 lock,
 		_model->start_write();
 	}
 
-	Evoral::MIDIEvent<framepos_t> ev;
+	Evoral::Event<framepos_t> ev;
 	while (true) {
 		/* Get the event time, in frames since session start but ignoring looping. */
 		bool ret;
@@ -372,7 +374,7 @@ SMFSource::write_unlocked (const Lock&                 lock,
 		time -= position;
 
 		ev.set(buf, size, time);
-		ev.set_event_type(midi_parameter_type(ev.buffer()[0]));
+		ev.set_event_type(Evoral::MIDI_EVENT);
 		ev.set_id(Evoral::next_event_id());
 
 		if (!(ev.is_channel_event() || ev.is_smf_meta_event() || ev.is_sysex())) {
@@ -599,8 +601,8 @@ SMFSource::safe_midi_file_extension (const string& file)
 }
 
 static bool compare_eventlist (
-	const std::pair< Evoral::Event<Evoral::Beats>*, gint >& a,
-	const std::pair< Evoral::Event<Evoral::Beats>*, gint >& b) {
+	const std::pair< const Evoral::Event<Evoral::Beats>*, gint >& a,
+	const std::pair< const Evoral::Event<Evoral::Beats>*, gint >& b) {
 	return ( a.first->time() < b.first->time() );
 }
 
@@ -669,7 +671,6 @@ SMFSource::load_model (const Glib::Threads::Mutex::Lock& lock, bool force_reload
 				if (!have_event_id) {
 					event_id = Evoral::next_event_id();
 				}
-				const uint32_t            event_type = midi_parameter_type(buf[0]);
 				const Evoral::Beats event_time = Evoral::Beats::ticks_at_rate(time, ppqn());
 #ifndef NDEBUG
 				std::string ss;
@@ -680,13 +681,13 @@ SMFSource::load_model (const Glib::Threads::Mutex::Lock& lock, bool force_reload
 					ss += b;
 				}
 
-				DEBUG_TRACE (DEBUG::MidiSourceIO, string_compose ("SMF %7 load model delta %1, time %2, size %3 buf %4, type %5 id %6\n",
-							delta_t, time, size, ss , event_type, event_id, name()));
+				DEBUG_TRACE (DEBUG::MidiSourceIO, string_compose ("SMF %7 load model delta %1, time %2, size %3 buf %4, id %6\n",
+							delta_t, time, size, ss, event_id, name()));
 #endif
 
 				eventlist.push_back(make_pair (
 							new Evoral::Event<Evoral::Beats> (
-								event_type, event_time,
+								Evoral::MIDI_EVENT, event_time,
 								size, buf, true)
 							, event_id));
 
@@ -787,5 +788,3 @@ SMFSource::prevent_deletion ()
 
 	_flags = Flag (_flags & ~(Removable|RemovableIfEmpty|RemoveAtDestroy));
 }
-
-

@@ -56,6 +56,7 @@
 #include "pbd/compose.h"
 #include "pbd/convert.h"
 #include "pbd/failed_constructor.h"
+#include "pbd/file_archive.h"
 #include "pbd/enumwriter.h"
 #include "pbd/memento_command.h"
 #include "pbd/openuri.h"
@@ -162,15 +163,16 @@ typedef uint64_t microseconds_t;
 #include "route_params_ui.h"
 #include "save_as_dialog.h"
 #include "script_selector.h"
+#include "session_archive_dialog.h"
 #include "session_dialog.h"
 #include "session_metadata_dialog.h"
 #include "session_option_editor.h"
-#include "shuttle_control.h"
 #include "speaker_dialog.h"
 #include "splash.h"
 #include "startup.h"
 #include "theme_manager.h"
 #include "time_axis_view_item.h"
+#include "time_info_box.h"
 #include "timers.h"
 #include "utils.h"
 #include "video_server_dialog.h"
@@ -270,6 +272,7 @@ ARDOUR_UI::ARDOUR_UI (int *argcp, char **argvp[], const char* localedir)
 	, _mixer_on_top (false)
 	, _initial_verbose_plugin_scan (false)
 	, first_time_engine_run (true)
+	, secondary_clock_spacer (0)
 	, roll_controllable (new TransportControllable ("transport roll", *this, TransportControllable::Roll))
 	, stop_controllable (new TransportControllable ("transport stop", *this, TransportControllable::Stop))
 	, goto_start_controllable (new TransportControllable ("transport goto start", *this, TransportControllable::GotoStart))
@@ -277,6 +280,7 @@ ARDOUR_UI::ARDOUR_UI (int *argcp, char **argvp[], const char* localedir)
 	, auto_loop_controllable (new TransportControllable ("transport auto loop", *this, TransportControllable::AutoLoop))
 	, play_selection_controllable (new TransportControllable ("transport play selection", *this, TransportControllable::PlaySelection))
 	, rec_controllable (new TransportControllable ("transport rec-enable", *this, TransportControllable::RecordEnable))
+	, time_info_box (0)
 	, auto_return_button (ArdourButton::led_default_elements)
 	, follow_edits_button (ArdourButton::led_default_elements)
 	, auto_input_button (ArdourButton::led_default_elements)
@@ -737,6 +741,7 @@ ARDOUR_UI::~ARDOUR_UI ()
 		delete primary_clock; primary_clock = 0;
 		delete secondary_clock; secondary_clock = 0;
 		delete _process_thread; _process_thread = 0;
+		delete time_info_box; time_info_box = 0;
 		delete meterbridge; meterbridge = 0;
 		delete luawindow; luawindow = 0;
 		delete editor; editor = 0;
@@ -826,7 +831,7 @@ ARDOUR_UI::set_transport_controllable_state (const XMLNode& node)
 		rec_controllable->set_id (prop->value());
 	}
 	if ((prop = node.property ("shuttle")) != 0) {
-		shuttle_box->controllable()->set_id (prop->value());
+		shuttle_box.controllable()->set_id (prop->value());
 	}
 }
 
@@ -850,7 +855,7 @@ ARDOUR_UI::get_transport_controllable_state ()
 	node->add_property (X_("play_selection"), buf);
 	rec_controllable->id().print (buf, sizeof (buf));
 	node->add_property (X_("rec"), buf);
-	shuttle_box->controllable()->id().print (buf, sizeof (buf));
+	shuttle_box.controllable()->id().print (buf, sizeof (buf));
 	node->add_property (X_("shuttle"), buf);
 
 	return *node;
@@ -1069,6 +1074,45 @@ ARDOUR_UI::starting ()
 			}
 		}
 
+		// TODO: maybe IFF brand_new_user
+		if (ARDOUR::Profile->get_mixbus () && Config->get_copy_demo_sessions ()) {
+			std::string dspd (Config->get_default_session_parent_dir());
+			Searchpath ds (ARDOUR::ardour_data_search_path());
+			ds.add_subdirectory_to_paths ("sessions");
+			vector<string> demos;
+			find_files_matching_pattern (demos, ds, "*.tar.xz");
+
+			ARDOUR::RecentSessions rs;
+			ARDOUR::read_recent_sessions (rs);
+
+			for (vector<string>::iterator i = demos.begin(); i != demos.end (); ++i) {
+				/* "demo-session" must be inside "demo-session.tar.xz"
+				 * strip ".tar.xz"
+				 */
+				std::string name = basename_nosuffix (basename_nosuffix (*i));
+				std::string path = Glib::build_filename (dspd, name);
+				/* skip if session-dir already exists */
+				if (Glib::file_test(path.c_str(), Glib::FILE_TEST_IS_DIR)) {
+					continue;
+				}
+				/* skip sessions that are already in 'recent'.
+				 * eg. a new user changed <session-default-dir> shorly after installation
+				 */
+				for (ARDOUR::RecentSessions::iterator r = rs.begin(); r != rs.end(); ++r) {
+					if ((*r).first == name) {
+						continue;
+					}
+				}
+				try {
+					PBD::FileArchive ar (*i);
+					if (0 == ar.inflate (dspd)) {
+						store_recent_sessions (name, path);
+						info << string_compose (_("Copied Demo Session %1."), name) << endmsg;
+					}
+				} catch (...) {}
+			}
+		}
+
 #ifdef NO_PLUGIN_STATE
 
 		ARDOUR::RecentSessions rs;
@@ -1284,6 +1328,10 @@ If you still wish to quit, please use the\n\n\
 	*/
 	save_ardour_state ();
 
+	if (key_editor.get (false)) {
+		key_editor->disconnect ();
+	}
+
 	close_all_dialogs ();
 
 	if (_session) {
@@ -1405,7 +1453,7 @@ ARDOUR_UI::every_point_zero_something_seconds ()
 {
 	// august 2007: actual update frequency: 25Hz (40ms), not 100Hz
 
-	if (editor_meter && UIConfiguration::instance().get_show_editor_meter()) {
+	if (editor_meter && UIConfiguration::instance().get_show_editor_meter() && editor_meter_peak_display.is_mapped ()) {
 		float mpeak = editor_meter->update_meters();
 		if (mpeak > editor_meter_max_peak) {
 			if (mpeak >= UIConfiguration::instance().get_meter_peak()) {
@@ -2464,10 +2512,11 @@ ARDOUR_UI::map_transport_state ()
 		play_selection_button.unset_active_state ();
 		roll_button.unset_active_state ();
 		stop_button.set_active_state (Gtkmm2ext::ExplicitActive);
+		layered_button.set_sensitive (false);
 		return;
 	}
 
-	shuttle_box->map_transport_state ();
+	shuttle_box.map_transport_state ();
 
 	float sp = _session->transport_speed();
 
@@ -2503,11 +2552,13 @@ ARDOUR_UI::map_transport_state ()
 			roll_button.set_active (true);
 			play_selection_button.set_active (true);
 		}
+		layered_button.set_sensitive (!_session->actively_recording ());
 
 		stop_button.set_active (false);
 
 	} else {
 
+		layered_button.set_sensitive (true);
 		stop_button.set_active (true);
 		roll_button.set_active (false);
 		play_selection_button.set_active (false);
@@ -2655,6 +2706,32 @@ ARDOUR_UI::save_session_as ()
 }
 
 void
+ARDOUR_UI::archive_session ()
+{
+	if (!_session) {
+		return;
+	}
+
+	time_t n;
+	time (&n);
+	Glib::DateTime gdt (Glib::DateTime::create_now_local (n));
+
+	SessionArchiveDialog sad;
+	sad.set_name (_session->name() + gdt.format ("_%F_%H%M%S"));
+	int response = sad.run ();
+
+	if (response != Gtk::RESPONSE_OK) {
+		sad.hide ();
+		return;
+	}
+
+	if (_session->archive_session (sad.target_folder(), sad.name(), sad.encode_option (), sad.only_used_sources (), &sad)) {
+		MessageDialog msg (_("Session Archiving failed."));
+		msg.run ();
+	}
+}
+
+void
 ARDOUR_UI::quick_snapshot_session (bool switch_to_it)
 {
 		char timebuf[128];
@@ -2731,14 +2808,8 @@ ARDOUR_UI::snapshot_session (bool switch_to_it)
 	if (switch_to_it) {
 		prompter.set_initial_text (_session->snap_name());
 	} else {
-		char timebuf[128];
-		time_t n;
-		struct tm local_time;
-
-		time (&n);
-		localtime_r (&n, &local_time);
-		strftime (timebuf, sizeof(timebuf), "%FT%H.%M.%S", &local_time);
-		prompter.set_initial_text (timebuf);
+		Glib::DateTime tm (g_date_time_new_now_local ());
+		prompter.set_initial_text (tm.format ("%FT%H.%M.%S"));
 	}
 
 	bool finished = false;
@@ -3060,7 +3131,19 @@ ARDOUR_UI::build_session_from_dialog (SessionDialog& sd, const std::string& sess
 void
 ARDOUR_UI::load_from_application_api (const std::string& path)
 {
+	/* OS X El Capitan (and probably later) now somehow passes the command
+	   line arguments to an app via the openFile delegate protocol. Ardour 
+	   already does its own command line processing, and having both
+	   pathways active causes crashes. So, if the command line was already
+	   set, do nothing here.
+	*/
+
+	if (!ARDOUR_COMMAND_LINE::session_name.empty()) {
+		return;
+	}
+
 	ARDOUR_COMMAND_LINE::session_name = path;
+
 	/* Cancel SessionDialog if it's visible to make OSX delegates work.
 	 *
 	 * ARDOUR_UI::starting connects app->ShouldLoad signal and then shows a SessionDialog
@@ -3543,7 +3626,9 @@ ARDOUR_UI::build_session (const std::string& path, const std::string& snap_name,
 	}
 
 	catch (SessionException e) {
+		cerr << "Here are the errors associated with this failed session:\n";
 		dump_errors (cerr);
+		cerr << "---------\n";
 		MessageDialog msg (string_compose(_("Could not create session in \"%1\": %2"), path, e.what()));
 		msg.set_title (_("Loading Error"));
 		msg.set_position (Gtk::WIN_POS_CENTER);
@@ -3552,7 +3637,9 @@ ARDOUR_UI::build_session (const std::string& path, const std::string& snap_name,
 		return -1;
 	}
 	catch (...) {
+		cerr << "Here are the errors associated with this failed session:\n";
 		dump_errors (cerr);
+		cerr << "---------\n";
 		MessageDialog msg (string_compose(_("Could not create session in \"%1\""), path));
 		msg.set_title (_("Loading Error"));
 		msg.set_position (Gtk::WIN_POS_CENTER);
@@ -3969,7 +4056,7 @@ ARDOUR_UI::cleanup_peakfiles ()
 }
 
 PresentationInfo::order_t
-ARDOUR_UI::translate_order (AddRouteDialog::InsertAt place)
+ARDOUR_UI::translate_order (RouteDialogs::InsertAt place)
 {
 	if (editor->get_selection().tracks.empty()) {
 		return PresentationInfo::max_order;
@@ -3982,18 +4069,18 @@ ARDOUR_UI::translate_order (AddRouteDialog::InsertAt place)
 	  the highest order key in the selection + 1 (if available).
 	*/
 
-	if (place == AddRouteDialog::AfterSelection) {
+	if (place == RouteDialogs::AfterSelection) {
 		RouteTimeAxisView *rtav = dynamic_cast<RouteTimeAxisView*> (editor->get_selection().tracks.back());
 		if (rtav) {
 			order_hint = rtav->route()->presentation_info().order();
 			order_hint++;
 		}
-	} else if (place == AddRouteDialog::BeforeSelection) {
+	} else if (place == RouteDialogs::BeforeSelection) {
 		RouteTimeAxisView *rtav = dynamic_cast<RouteTimeAxisView*> (editor->get_selection().tracks.front());
 		if (rtav) {
 			order_hint = rtav->route()->presentation_info().order();
 		}
-	} else if (place == AddRouteDialog::First) {
+	} else if (place == RouteDialogs::First) {
 		order_hint = 0;
 	} else {
 		/* leave order_hint at max_order */
@@ -4061,9 +4148,9 @@ ARDOUR_UI::add_route_dialog_finished (int r)
 
 	if (!template_path.empty()) {
 		if (add_route_dialog->name_template_is_default())  {
-			_session->new_route_from_template (count, template_path, string());
+			_session->new_route_from_template (count, order, template_path, string());
 		} else {
-			_session->new_route_from_template (count, template_path, add_route_dialog->name_template());
+			_session->new_route_from_template (count, order, template_path, add_route_dialog->name_template());
 		}
 		return;
 	}
@@ -4084,6 +4171,8 @@ ARDOUR_UI::add_route_dialog_finished (int r)
 	}
 
 	/* XXX do something with name template */
+
+	Session::ProcessorChangeBlocker pcb (_session);
 
 	switch (add_route_dialog->type_wanted()) {
 	case AddRouteDialog::AudioTrack:
@@ -4986,16 +5075,21 @@ ARDOUR_UI::record_state_changed ()
 {
 	ENSURE_GUI_THREAD (*this, &ARDOUR_UI::record_state_changed);
 
-	if (!_session || !big_clock_window) {
+	if (!_session) {
 		/* why bother - the clock isn't visible */
 		return;
 	}
 
-	if (_session->record_status () == Session::Recording && _session->have_rec_enabled_track ()) {
-		big_clock->set_active (true);
-	} else {
-		big_clock->set_active (false);
+	ActionManager::set_sensitive (ActionManager::rec_sensitive_actions, !_session->actively_recording());
+
+	if (big_clock_window) {
+		if (_session->record_status () == Session::Recording && _session->have_rec_enabled_track ()) {
+			big_clock->set_active (true);
+		} else {
+			big_clock->set_active (false);
+		}
 	}
+
 }
 
 bool
@@ -5259,16 +5353,16 @@ ARDOUR_UI::do_audio_midi_setup (uint32_t desired_sample_rate)
 
 	while (true) {
 		int response = audio_midi_setup->run();
+		printf("RESPONSE %d\n", response);
 		switch (response) {
-		case Gtk::RESPONSE_OK:
+		case Gtk::RESPONSE_DELETE_EVENT:
+			return -1;
+		default:
 			if (!AudioEngine::instance()->running()) {
 				continue;
-			} else {
-				return 0;
 			}
+			audio_midi_setup->hide ();
 			return 0;
-		default:
-			return -1;
 		}
 	}
 }
@@ -5488,15 +5582,15 @@ ARDOUR_UI::key_event_handler (GdkEventKey* ev, Gtk::Window* event_window)
 }
 
 static Gtkmm2ext::Bindings*
-get_bindings_from_widget_heirarchy (GtkWidget* w)
+get_bindings_from_widget_heirarchy (GtkWidget** w)
 {
 	void* p = NULL;
 
-	while (w) {
-		if ((p = g_object_get_data (G_OBJECT(w), "ardour-bindings")) != 0) {
+	while (*w) {
+		if ((p = g_object_get_data (G_OBJECT(*w), "ardour-bindings")) != 0) {
 			break;
 		}
-		w = gtk_widget_get_parent (w);
+		*w = gtk_widget_get_parent (*w);
 	}
 
 	return reinterpret_cast<Gtkmm2ext::Bindings*> (p);
@@ -5507,6 +5601,7 @@ ARDOUR_UI::key_press_focus_accelerator_handler (Gtk::Window& window, GdkEventKey
 {
 	GtkWindow* win = window.gobj();
 	GtkWidget* focus = gtk_window_get_focus (win);
+	GtkWidget* binding_widget = focus;
 	bool special_handling_of_unmodified_accelerators = false;
 	const guint mask = (Keyboard::RelevantModifierKeyMask & ~(Gdk::SHIFT_MASK|Gdk::LOCK_MASK));
 
@@ -5525,7 +5620,7 @@ ARDOUR_UI::key_press_focus_accelerator_handler (Gtk::Window& window, GdkEventKey
 
 		} else {
 
-			Gtkmm2ext::Bindings* focus_bindings = get_bindings_from_widget_heirarchy (focus);
+			Gtkmm2ext::Bindings* focus_bindings = get_bindings_from_widget_heirarchy (&binding_widget);
 			if (focus_bindings) {
 				bindings = focus_bindings;
 				DEBUG_TRACE (DEBUG::Accelerators, string_compose ("Switch bindings based on focus widget, now using %1\n", bindings->name()));
@@ -5587,13 +5682,24 @@ ARDOUR_UI::key_press_focus_accelerator_handler (Gtk::Window& window, GdkEventKey
 		DEBUG_TRACE (DEBUG::Accelerators, "\tsending to window\n");
 		KeyboardKey k (ev->state, ev->keyval);
 
-		if (bindings) {
+		while (bindings) {
 
 			DEBUG_TRACE (DEBUG::Accelerators, string_compose ("\tusing Ardour bindings %1 @ %2 for this event\n", bindings->name(), bindings));
 
 			if (bindings->activate (k, Bindings::Press)) {
 				DEBUG_TRACE (DEBUG::Accelerators, "\t\thandled\n");
 				return true;
+			}
+
+			if (binding_widget) {
+				binding_widget = gtk_widget_get_parent (binding_widget);
+				if (binding_widget) {
+					bindings = get_bindings_from_widget_heirarchy (&binding_widget);
+				} else {
+					bindings = 0;
+				}
+			} else {
+				bindings = 0;
 			}
 		}
 
@@ -5625,7 +5731,7 @@ ARDOUR_UI::key_press_focus_accelerator_handler (Gtk::Window& window, GdkEventKey
 		DEBUG_TRACE (DEBUG::Accelerators, "\tpropagation didn't handle, so activate\n");
 		KeyboardKey k (ev->state, ev->keyval);
 
-		if (bindings) {
+		while (bindings) {
 
 			DEBUG_TRACE (DEBUG::Accelerators, "\tusing Ardour bindings for this window\n");
 
@@ -5635,6 +5741,16 @@ ARDOUR_UI::key_press_focus_accelerator_handler (Gtk::Window& window, GdkEventKey
 				return true;
 			}
 
+			if (binding_widget) {
+				binding_widget = gtk_widget_get_parent (binding_widget);
+				if (binding_widget) {
+					bindings = get_bindings_from_widget_heirarchy (&binding_widget);
+				} else {
+					bindings = 0;
+				}
+			} else {
+				bindings = 0;
+			}
 		}
 
 		DEBUG_TRACE (DEBUG::Accelerators, "\tnot yet handled, try global bindings\n");
@@ -5663,4 +5779,56 @@ ARDOUR_UI::cancel_solo ()
 	if (_session) {
 		_session->cancel_all_solo ();
 	}
+}
+
+void
+ARDOUR_UI::reset_focus (Gtk::Widget* w)
+{
+	/* this resets focus to the first focusable parent of the given widget,
+	 * or, if there is no focusable parent, cancels focus in the toplevel
+	 * window that the given widget is packed into (if there is one).
+	 */
+
+	if (!w) {
+		return;
+	}
+
+	Gtk::Widget* top = w->get_toplevel();
+
+	if (!top || !top->is_toplevel()) {
+		return;
+	}
+
+	w = w->get_parent ();
+
+	while (w) {
+
+		if (w->is_toplevel()) {
+			/* Setting the focus widget to a Gtk::Window causes all
+			 * subsequent calls to ::has_focus() on the nominal
+			 * focus widget in that window to return
+			 * false. Workaround: never set focus to the toplevel
+			 * itself.
+			 */
+			break;
+		}
+
+		if (w->get_can_focus ()) {
+			Gtk::Window* win = dynamic_cast<Gtk::Window*> (top);
+			win->set_focus (*w);
+			return;
+		}
+		w = w->get_parent ();
+	}
+
+	if (top == &_main_window) {
+
+	}
+
+	/* no focusable parent found, cancel focus in top level window.
+	   C++ API cannot be used for this. Thanks, references.
+	*/
+
+	gtk_window_set_focus (GTK_WINDOW(top->gobj()), 0);
+
 }
