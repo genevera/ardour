@@ -57,6 +57,7 @@
 #include "osc_controllable.h"
 #include "osc_route_observer.h"
 #include "osc_global_observer.h"
+#include "osc_cue_observer.h"
 #include "pbd/i18n.h"
 
 using namespace ARDOUR;
@@ -90,7 +91,6 @@ OSC::OSC (Session& s, uint32_t port)
 	, _shutdown (false)
 	, _osc_server (0)
 	, _osc_unix_server (0)
-	, _send_route_changes (true)
 	, _debugmode (Off)
 	, address_only (false)
 	, remote_port ("8000")
@@ -110,6 +110,7 @@ OSC::OSC (Session& s, uint32_t port)
 OSC::~OSC()
 {
 	stop ();
+	tear_down_gui ();
 	_instance = 0;
 }
 
@@ -161,19 +162,6 @@ bool
 OSC::get_active () const
 {
 	return _osc_server != 0;
-}
-
-int
-OSC::set_feedback (bool yn)
-{
-	_send_route_changes = yn;
-	return 0;
-}
-
-bool
-OSC::get_feedback () const
-{
-	return _send_route_changes;
 }
 
 int
@@ -341,6 +329,7 @@ OSC::stop ()
 
 	periodic_connection.disconnect ();
 	session_connections.drop_connections ();
+	cueobserver_connections.drop_connections ();
 	// Delete any active route observers
 	for (RouteObservers::iterator x = route_observers.begin(); x != route_observers.end();) {
 
@@ -365,12 +354,26 @@ OSC::stop ()
 			++x;
 		}
 	}
+
 // delete select observers
 	for (uint32_t it = 0; it < _surface.size(); ++it) {
 		OSCSurface* sur = &_surface[it];
 		OSCSelectObserver* so;
 		if ((so = dynamic_cast<OSCSelectObserver*>(sur->sel_obs)) != 0) {
 			delete so;
+		}
+	}
+
+// delete cue observers
+	for (CueObservers::iterator x = cue_observers.begin(); x != cue_observers.end();) {
+
+		OSCCueObserver* co;
+
+		if ((co = dynamic_cast<OSCCueObserver*>(*x)) != 0) {
+			delete *x;
+			x = cue_observers.erase (x);
+		} else {
+			++x;
 		}
 	}
 
@@ -475,7 +478,6 @@ OSC::register_callbacks()
 		REGISTER_CALLBACK (serv, "/set_loop_range", "f", set_loop_range);
 		REGISTER_CALLBACK (serv, "/set_session_range", "", set_session_range);
 		REGISTER_CALLBACK (serv, "/set_session_range", "f", set_session_range);
-		// /toggle_monitor_* not working (comented out)
 		REGISTER_CALLBACK (serv, "/toggle_monitor_mute", "", toggle_monitor_mute);
 		REGISTER_CALLBACK (serv, "/toggle_monitor_mute", "f", toggle_monitor_mute);
 		REGISTER_CALLBACK (serv, "/toggle_monitor_dim", "", toggle_monitor_dim);
@@ -539,6 +541,9 @@ OSC::register_callbacks()
 		REGISTER_CALLBACK (serv, "/master/pan_stereo_position", "f", master_set_pan_stereo_position);
 		REGISTER_CALLBACK (serv, "/monitor/gain", "f", monitor_set_gain);
 		REGISTER_CALLBACK (serv, "/monitor/fader", "f", monitor_set_fader);
+		REGISTER_CALLBACK (serv, "/monitor/mute", "i", monitor_set_mute);
+		REGISTER_CALLBACK (serv, "/monitor/dim", "i", monitor_set_dim);
+		REGISTER_CALLBACK (serv, "/monitor/mono", "i", monitor_set_mono);
 
 		// Controls for the Selected strip
 		REGISTER_CALLBACK (serv, "/select/recenable", "i", sel_recenable);
@@ -697,7 +702,7 @@ OSC::listen_to_route (boost::shared_ptr<Stripable> strip, lo_address addr)
 
 	OSCSurface *s = get_surface(addr);
 	uint32_t ssid = get_sid (strip, addr);
-	OSCRouteObserver* o = new OSCRouteObserver (strip, addr, ssid, s->gainmode, s->feedback);
+	OSCRouteObserver* o = new OSCRouteObserver (strip, addr, ssid, s);
 	route_observers.push_back (o);
 
 	strip->DropReferences.connect (*this, MISSING_INVALIDATOR, boost::bind (&OSC::route_lost, this, boost::weak_ptr<Stripable> (strip)), this);
@@ -860,7 +865,17 @@ OSC::catchall (const char *path, const char* types, lo_arg **argv, int argc, lo_
 	} else
 	if (!strncmp (path, "/cue/", 5)) {
 
-		//cue_parse (path, types, argv, argc, msg)
+		cue_parse (path, types, argv, argc, msg);
+
+		ret = 0;
+	} else
+	if (!strncmp (path, "/access_action/", 15)) {
+		if (!(argc && !argv[0]->i)) {
+			std::string action_path = path;
+
+			access_action (action_path.substr(15));
+			std::cout << "access_action path = " << action_path.substr(15) << "\n";
+		}
 
 		ret = 0;
 	} else
@@ -1006,9 +1021,9 @@ OSC::catchall (const char *path, const char* types, lo_arg **argv, int argc, lo_
 		ret = 0;
 	}
 
-	if ((ret && _debugmode == Unhandled)) {
+	if ((ret && _debugmode != Off)) {
 		debugmsg (_("Unhandled OSC message"), path, types, argv, argc);
-	} else if ((!ret && _debugmode == All)) {
+	} else if (!ret && _debugmode == All) {
 		debugmsg (_("OSC"), path, types, argv, argc);
 	}
 
@@ -1071,12 +1086,6 @@ OSC::debugmsg (const char *prefix, const char *path, const char* types, lo_arg *
 		}
 	}
 	PBD::info << prefix << ": " << path << ss.str() << endmsg;
-}
-
-void
-OSC::update_clock ()
-{
-
 }
 
 // "Application Hook" Handlers //
@@ -1165,41 +1174,65 @@ OSC::routes_list (lo_message msg)
 	if (!session) {
 		return;
 	}
-	for (int n = 0; n < (int) session->nroutes(); ++n) {
+	OSCSurface *sur = get_surface(get_address (msg));
+	sur->no_clear = true;
 
-		boost::shared_ptr<Route> r = session->get_remote_nth_route (n);
+	for (int n = 0; n < (int) sur->nstrips; ++n) {
 
-		if (r) {
+		boost::shared_ptr<Stripable> s = get_strip (n + 1, get_address (msg));
+
+		if (s) {
+			// some things need the route
+			boost::shared_ptr<Route> r = boost::dynamic_pointer_cast<Route> (s);
 
 			lo_message reply = lo_message_new ();
 
-			if (boost::dynamic_pointer_cast<AudioTrack>(r)) {
+			if (s->presentation_info().flags() & PresentationInfo::AudioTrack) {
 				lo_message_add_string (reply, "AT");
-			} else if (boost::dynamic_pointer_cast<MidiTrack>(r)) {
+			} else if (s->presentation_info().flags() & PresentationInfo::MidiTrack) {
 				lo_message_add_string (reply, "MT");
+			} else if (s->presentation_info().flags() & PresentationInfo::AudioBus) {
+				// r->feeds (session->master_out()) may make more sense
+				if (r->direct_feeds_according_to_reality (session->master_out())) {
+					// this is a bus
+					lo_message_add_string (reply, "B");
+				} else {
+					// this is an Aux out
+					lo_message_add_string (reply, "AX");
+				}
+			} else if (s->presentation_info().flags() & PresentationInfo::MidiBus) {
+				lo_message_add_string (reply, "MB");
+			} else if (s->presentation_info().flags() & PresentationInfo::VCA) {
+				lo_message_add_string (reply, "V");
+			}
+
+			lo_message_add_string (reply, s->name().c_str());
+			if (r) {
+				// routes have inputs and outputs
+				lo_message_add_int32 (reply, r->n_inputs().n_audio());
+				lo_message_add_int32 (reply, r->n_outputs().n_audio());
 			} else {
-				lo_message_add_string (reply, "B");
+				// non-routes like VCAs don't
+				lo_message_add_int32 (reply, 0);
+				lo_message_add_int32 (reply, 0);
+			}
+			if (s->mute_control()) {
+				lo_message_add_int32 (reply, s->mute_control()->get_value());
+			} else {
+				lo_message_add_int32 (reply, 0);
+			}
+			if (s->solo_control()) {
+				lo_message_add_int32 (reply, s->solo_control()->get_value());
+			} else {
+				lo_message_add_int32 (reply, 0);
+			}
+			lo_message_add_int32 (reply, n + 1);
+			if (s->rec_enable_control()) {
+				lo_message_add_int32 (reply, s->rec_enable_control()->get_value());
 			}
 
-			lo_message_add_string (reply, r->name().c_str());
-			lo_message_add_int32 (reply, r->n_inputs().n_audio());
-			lo_message_add_int32 (reply, r->n_outputs().n_audio());
-			lo_message_add_int32 (reply, r->muted());
-			lo_message_add_int32 (reply, r->soloed());
-			/* XXX Can only use order at this point */
-			//lo_message_add_int32 (reply, r->presentation_info().order());
-			// try this instead.
-			lo_message_add_int32 (reply, get_sid (r, get_address (msg)));
-
-			if (boost::dynamic_pointer_cast<AudioTrack>(r)
-					|| boost::dynamic_pointer_cast<MidiTrack>(r)) {
-
-				boost::shared_ptr<Track> t = boost::dynamic_pointer_cast<Track>(r);
-				lo_message_add_int32 (reply, (int32_t) t->rec_enable_control()->get_value());
-			}
-
-			//Automatically listen to routes listed
-			listen_to_route(r, get_address (msg));
+			//Automatically listen to stripables listed
+			listen_to_route(s, get_address (msg));
 
 			lo_send_message (get_address (msg), "#reply", reply);
 			lo_message_free (reply);
@@ -1212,6 +1245,12 @@ OSC::routes_list (lo_message msg)
 	lo_message_add_string (reply, "end_route_list");
 	lo_message_add_int64 (reply, session->frame_rate());
 	lo_message_add_int64 (reply, session->current_end_frame());
+	if (session->monitor_out()) {
+		// this session has a monitor section
+		lo_message_add_int32 (reply, 1);
+	} else {
+		lo_message_add_int32 (reply, 0);
+	}
 
 	lo_send_message (get_address (msg), "#reply", reply);
 
@@ -1243,6 +1282,7 @@ OSC::refresh_surface (lo_message msg)
 {
 	if (address_only) {
 		// get rid of all surfaces and observers.
+		// needs change to only clear those for this address on all ports
 		clear_devices();
 	}
 	OSCSurface *s = get_surface(get_address (msg));
@@ -1287,6 +1327,16 @@ OSC::clear_devices ()
 			delete so;
 		}
 	}
+	// delete cue observers
+	for (CueObservers::iterator x = cue_observers.begin(); x != cue_observers.end();) {
+		OSCCueObserver* co;
+		if ((co = dynamic_cast<OSCCueObserver*>(*x)) != 0) {
+			delete co;
+		} else {
+			++x;
+		}
+	}
+
 	// clear out surfaces
 	_surface.clear();
 }
@@ -1389,7 +1439,8 @@ OSC::get_surface (lo_address addr)
 	s.sel_obs = 0;
 	s.expand = 0;
 	s.expand_enable = false;
-	s.strips = get_sorted_stripables(s.strip_types);
+	s.cue = false;
+	s.strips = get_sorted_stripables(s.strip_types, s.cue);
 
 	s.nstrips = s.strips.size();
 	_surface.push_back (s);
@@ -1461,7 +1512,18 @@ OSC::_recalcbanks ()
 		OSCSurface* sur = &_surface[it];
 		// find lo_address
 		lo_address addr = lo_address_new_from_url (sur->remote_url.c_str());
-		_set_bank (sur->bank, addr);
+		if (sur->cue) {
+			_cue_set (sur->aux, addr);
+		} else {
+			_set_bank (sur->bank, addr);
+		}
+		if (sur->no_clear) {
+			// This surface uses /strip/list tell it routes have changed
+			lo_message reply;
+			reply = lo_message_new ();
+			lo_send_message (addr, "/strip/list", reply);
+			lo_message_free (reply);
+		}
 	}
 }
 
@@ -1513,7 +1575,7 @@ OSC::_set_bank (uint32_t bank_start, lo_address addr)
 		usleep ((uint32_t) 10);
 	}
 
-	s->strips = get_sorted_stripables(s->strip_types);
+	s->strips = get_sorted_stripables(s->strip_types, s->cue);
 	s->nstrips = s->strips.size();
 
 	uint32_t b_size;
@@ -1532,7 +1594,7 @@ OSC::_set_bank (uint32_t bank_start, lo_address addr)
 		// top bank is always filled if there are enough strips for at least one bank
 		bank_start = (uint32_t)((s->nstrips - b_size) + 1);
 	}
-	//save bank in case we have had to change it
+	//save bank after bank limit checks
 	s->bank = bank_start;
 
 	if (s->feedback[0] || s->feedback[1]) {
@@ -1550,8 +1612,7 @@ OSC::_set_bank (uint32_t bank_start, lo_address addr)
 		}
 	}
 	// light bankup or bankdown buttons if it is possible to bank in that direction
-	if (s->feedback[4]) {
-		// these two messages could be bundled
+	if (s->feedback[4] && !s->no_clear) {
 		lo_message reply;
 		reply = lo_message_new ();
 		if ((s->bank > (s->nstrips - s->bank_size)) || (s->nstrips < s->bank_size)) {
@@ -1797,6 +1858,42 @@ OSC::monitor_set_fader (float position)
 }
 
 int
+OSC::monitor_set_mute (uint32_t state)
+{
+	if (!session) return -1;
+
+	if (session->monitor_out()) {
+		boost::shared_ptr<MonitorProcessor> mon = session->monitor_out()->monitor_control();
+		mon->set_cut_all (state);
+	}
+	return 0;
+}
+
+int
+OSC::monitor_set_dim (uint32_t state)
+{
+	if (!session) return -1;
+
+	if (session->monitor_out()) {
+		boost::shared_ptr<MonitorProcessor> mon = session->monitor_out()->monitor_control();
+		mon->set_dim_all (state);
+	}
+	return 0;
+}
+
+int
+OSC::monitor_set_mono (uint32_t state)
+{
+	if (!session) return -1;
+
+	if (session->monitor_out()) {
+		boost::shared_ptr<MonitorProcessor> mon = session->monitor_out()->monitor_control();
+		mon->set_mono (state);
+	}
+	return 0;
+}
+
+int
 OSC::route_get_sends(lo_message msg) {
 	if (!session) {
 		return -1;
@@ -1837,7 +1934,8 @@ OSC::route_get_sends(lo_message msg) {
 			lo_message_add_int32(reply, p->active() ? 1 : 0);
 		}
 	}
-	// if used dedicated message path to identify this reply in async operation. Naming it #reply wont help the client to identify the content.
+	// if used dedicated message path to identify this reply in async operation.
+	// Naming it #reply wont help the client to identify the content.
 	lo_send_message(get_address (msg), "/strip/sends", reply);
 
 	lo_message_free(reply);
@@ -1899,7 +1997,8 @@ OSC::route_get_receives(lo_message msg) {
 		}
 	}
 
-	// I have used a dedicated message path to identify this reply in async operation. Naming it #reply wont help the client to identify the content.
+	// I have used a dedicated message path to identify this reply in async operation.
+	// Naming it #reply wont help the client to identify the content.
 	lo_send_message(get_address (msg), "/strip/receives", reply);
 	lo_message_free(reply);
 	return 0;
@@ -1950,7 +2049,6 @@ OSC::route_solo (int ssid, int yn, lo_message msg)
 	if (s) {
 		if (s->solo_control()) {
 			s->solo_control()->set_value (yn ? 1.0 : 0.0, PBD::Controllable::NoGroup);
-			return route_send_fail ("solo", ssid, (float) s->solo_control()->get_value(), get_address (msg));
 		}
 	}
 
@@ -2001,8 +2099,7 @@ OSC::sel_solo (uint32_t yn, lo_message msg)
 	}
 	if (s) {
 		if (s->solo_control()) {
-			s->solo_control()->set_value (yn ? 1.0 : 0.0, PBD::Controllable::NoGroup);
-			return sel_fail ("solo", (float) s->solo_control()->get_value(), get_address (msg));
+			session->set_control (s->solo_control(), yn ? 1.0 : 0.0, PBD::Controllable::NoGroup);
 		}
 	}
 	return sel_fail ("solo", 0, get_address (msg));
@@ -2545,7 +2642,6 @@ OSC::sel_pan_position (float val, lo_message msg)
 	if (s) {
 		if(s->pan_azimuth_control()) {
 			s->pan_azimuth_control()->set_value (s->pan_azimuth_control()->interface_to_internal (val), PBD::Controllable::NoGroup);
-			return sel_fail ("pan_stereo_position", s->pan_azimuth_control()->internal_to_interface (s->pan_azimuth_control()->get_value ()), get_address (msg));
 			return 0;
 		}
 	}
@@ -2580,7 +2676,7 @@ OSC::route_set_pan_stereo_position (int ssid, float pos, lo_message msg)
 	if (s) {
 		if(s->pan_azimuth_control()) {
 			s->pan_azimuth_control()->set_value (s->pan_azimuth_control()->interface_to_internal (pos), PBD::Controllable::NoGroup);
-			return route_send_fail ("pan_stereo_position", ssid, s->pan_azimuth_control()->internal_to_interface (s->pan_azimuth_control()->get_value ()), get_address (msg));
+			return 0;
 		}
 	}
 
@@ -3491,6 +3587,14 @@ OSC::periodic (void)
 			so->tick();
 		}
 	}
+	for (CueObservers::iterator x = cue_observers.begin(); x != cue_observers.end(); x++) {
+
+		OSCCueObserver* co;
+
+		if ((co = dynamic_cast<OSCCueObserver*>(*x)) != 0) {
+			co->tick();
+		}
+	}
 	return true;
 }
 
@@ -3658,7 +3762,7 @@ OSC::set_state (const XMLNode& node, int version)
 				s.sel_obs = 0;
 				s.expand = 0;
 				s.expand_enable = false;
-				s.strips = get_sorted_stripables(s.strip_types);
+				s.strips = get_sorted_stripables(s.strip_types, s.cue);
 				s.nstrips = s.strips.size();
 				_surface.push_back (s);
 			}
@@ -3690,7 +3794,7 @@ struct StripableByPresentationOrder
 };
 
 OSC::Sorted
-OSC::get_sorted_stripables(std::bitset<32> types)
+OSC::get_sorted_stripables(std::bitset<32> types, bool cue)
 {
 	Sorted sorted;
 
@@ -3703,7 +3807,7 @@ OSC::get_sorted_stripables(std::bitset<32> types)
 	for (StripableList::iterator it = stripables.begin(); it != stripables.end(); ++it) {
 
 		boost::shared_ptr<Stripable> s = *it;
-		if ((!types[9]) && (s->presentation_info().flags() & PresentationInfo::Hidden)) {
+		if ((!cue) && (!types[9]) && (s->presentation_info().flags() & PresentationInfo::Hidden)) {
 			// do nothing... skip it
 		} else {
 
@@ -3750,6 +3854,301 @@ OSC::get_sorted_stripables(std::bitset<32> types)
 	if (types[6]) {
 		sorted.push_back (session->monitor_out());
 	}
+	return sorted;
+}
+
+int
+OSC::cue_parse (const char *path, const char* types, lo_arg **argv, int argc, lo_message msg)
+{
+	int ret = 1; /* unhandled */
+
+	if (!strncmp (path, "/cue/aux", 8)) {
+		// set our Aux bus
+		cue_set (argv[0]->i, msg);
+		ret = 0;
+	}
+	else if (!strncmp (path, "/cue/connect", 12)) {
+		// switch to next Aux bus
+		cue_set (0, msg);
+		ret = 0;
+	}
+	else if (!strncmp (path, "/cue/next_aux", 13)) {
+		// switch to next Aux bus
+		cue_next (msg);
+		ret = 0;
+	}
+	else if (!strncmp (path, "/cue/previous_aux", 17)) {
+		// switch to previous Aux bus
+		cue_previous (msg);
+		ret = 0;
+	}
+	else if (!strncmp (path, "/cue/send/fader/", 16) && strlen (path) > 16) {
+		int id = atoi (&path[16]);
+		cue_send_fader (id, argv[0]->f, msg);
+		ret = 0;
+	}
+	else if (!strncmp (path, "/cue/send/enable/", 17) && strlen (path) > 17) {
+		int id = atoi (&path[17]);
+		cue_send_enable (id, argv[0]->f, msg);
+		ret = 0;
+	}
+	else if (!strncmp (path, "/cue/fader", 10)) {
+		cue_aux_fader (argv[0]->f, msg);
+		ret = 0;
+	}
+	else if (!strncmp (path, "/cue/mute", 9)) {
+		cue_aux_mute (argv[0]->f, msg);
+		ret = 0;
+	}
+
+	if ((ret && _debugmode == Unhandled)) {
+		debugmsg (_("Unhandled OSC cue message"), path, types, argv, argc);
+	} else if ((!ret && _debugmode == All)) {
+		debugmsg (_("OSC cue"), path, types, argv, argc);
+	}
+
+	return ret;
+}
+
+int
+OSC::cue_set (uint32_t aux, lo_message msg)
+{
+	return _cue_set (aux, get_address (msg));
+}
+
+int
+OSC::_cue_set (uint32_t aux, lo_address addr)
+{
+	OSCSurface *s = get_surface(addr);
+	s->bank_size = 0;
+	s->strip_types = 128;
+	s->feedback = 0;
+	s->gainmode = 1;
+	s->cue = true;
+	s->aux = aux;
+	s->strips = get_sorted_stripables(s->strip_types, s->cue);
+
+	s->nstrips = s->strips.size();
+	// get rid of any old CueObsevers for this address
+	cueobserver_connections.drop_connections ();
+	CueObservers::iterator x;
+	for (x = cue_observers.begin(); x != cue_observers.end();) {
+
+		OSCCueObserver* co;
+
+		if ((co = dynamic_cast<OSCCueObserver*>(*x)) != 0) {
+
+			int res = strcmp(lo_address_get_url(co->address()), lo_address_get_url(addr));
+
+			if (res == 0) {
+				delete *x;
+				x = cue_observers.erase (x);
+			} else {
+				++x;
+			}
+		} else {
+			++x;
+		}
+	}
+
+	// get a list of Auxes
+	for (uint32_t n = 0; n < s->nstrips; ++n) {
+		boost::shared_ptr<Stripable> stp = s->strips[n];
+		if (stp) {
+			text_message (string_compose ("/cue/name/%1", n+1), stp->name(), addr);
+			if (aux == n+1) {
+				// aux must be at least one
+				// need a signal if aux vanishes
+				stp->DropReferences.connect (*this, MISSING_INVALIDATOR, boost::bind (&OSC::_cue_set, this, aux, addr), this);
+
+				// make a list of stripables with sends that go to this bus
+				s->sends = cue_get_sorted_stripables(stp, aux, addr);
+				// start cue observer
+				OSCCueObserver* co = new OSCCueObserver (stp, s->sends, addr);
+				cue_observers.push_back (co);
+			}
+
+		}
+	}
+
+	return 0;
+}
+
+int
+OSC::cue_next (lo_message msg)
+{
+	OSCSurface *s = get_surface(get_address (msg));
+	if (s->aux < s->nstrips) {
+		cue_set (s->aux + 1, msg);
+	} else {
+		cue_set (s->nstrips, msg);
+	}
+	return 0;
+}
+
+int
+OSC::cue_previous (lo_message msg)
+{
+	OSCSurface *s = get_surface(get_address (msg));
+	if (s->aux > 1) {
+		cue_set (s->aux - 1, msg);
+	}
+	return 0;
+}
+
+boost::shared_ptr<Send>
+OSC::cue_get_send (uint32_t id, lo_address addr)
+{
+	OSCSurface *s = get_surface(addr);
+	if (id && s->aux > 0 && id <= s->sends.size()) {
+		boost::shared_ptr<Route> r = boost::dynamic_pointer_cast<Route> (s->sends[id - 1]);
+		boost::shared_ptr<Stripable> aux = get_strip (s->aux, addr);
+		if (r && aux) {
+			return r->internal_send_for (boost::dynamic_pointer_cast<Route> (aux));
+		}
+	}
+	return boost::shared_ptr<Send>();
+
+}
+
+int
+OSC::cue_aux_fader (float position, lo_message msg)
+{
+	if (!session) return -1;
+
+	OSCSurface *sur = get_surface(get_address (msg));
+	if (sur->cue) {
+		if (sur->aux) {
+			boost::shared_ptr<Stripable> s = get_strip (sur->aux, get_address (msg));
+
+			if (s) {
+				float abs;
+				abs = slider_position_to_gain_with_max (position, 2.0);
+				if (s->gain_control()) {
+					s->gain_control()->set_value (abs, PBD::Controllable::NoGroup);
+					return 0;
+				}
+			}
+		}
+	}
+	return cue_float_message ("/cue/fader", 0, get_address (msg));
+}
+
+int
+OSC::cue_aux_mute (float state, lo_message msg)
+{
+	if (!session) return -1;
+
+	OSCSurface *sur = get_surface(get_address (msg));
+	if (sur->cue) {
+		if (sur->aux) {
+			boost::shared_ptr<Stripable> s = get_strip (sur->aux, get_address (msg));
+			if (s) {
+				if (s->mute_control()) {
+					s->mute_control()->set_value (state ? 1.0 : 0.0, PBD::Controllable::NoGroup);
+					return 0;
+				}
+			}
+		}
+	}
+	return cue_float_message ("/cue/mute", 0, get_address (msg));
+}
+
+int
+OSC::cue_send_fader (uint32_t id, float val, lo_message msg)
+{
+	if (!session) {
+		return -1;
+	}
+	boost::shared_ptr<Send> s = cue_get_send (id, get_address (msg));
+	float abs;
+	if (s) {
+		if (s->gain_control()) {
+			abs = slider_position_to_gain_with_max (val, 2.0);
+			s->gain_control()->set_value (abs, PBD::Controllable::NoGroup);
+			return 0;
+		}
+	}
+	return cue_float_message (string_compose ("/cue/send/fader/%1", id), 0, get_address (msg));
+}
+
+int
+OSC::cue_send_enable (uint32_t id, float state, lo_message msg)
+{
+	if (!session)
+		return -1;
+	boost::shared_ptr<Send> s = cue_get_send (id, get_address (msg));
+	if (s) {
+		if (state) {
+			s->activate ();
+		} else {
+			s->deactivate ();
+		}
+		return 0;
+	}
+	return cue_float_message (string_compose ("/cue/send/enable/%1", id), 0, get_address (msg));
+}
+
+int
+OSC::cue_float_message (string path, float val, lo_address addr)
+{
+
+	lo_message reply;
+	reply = lo_message_new ();
+	lo_message_add_float (reply, (float) val);
+
+	lo_send_message (addr, path.c_str(), reply);
+	lo_message_free (reply);
+
+	return 0;
+}
+
+int
+OSC::text_message (string path, string val, lo_address addr)
+{
+
+	lo_message reply;
+	reply = lo_message_new ();
+	lo_message_add_string (reply, val.c_str());
+
+	lo_send_message (addr, path.c_str(), reply);
+	lo_message_free (reply);
+
+	return 0;
+}
+
+
+// we have to have a sorted list of stripables that have sends pointed at our aux
+// we can use the one in osc.cc to get an aux list
+OSC::Sorted
+OSC::cue_get_sorted_stripables(boost::shared_ptr<Stripable> aux, uint32_t id, lo_message msg)
+{
+	Sorted sorted;
+	cueobserver_connections.drop_connections ();
+	// fetch all stripables
+	StripableList stripables;
+
+	session->get_stripables (stripables);
+
+	// Look for stripables that have a send to aux
+	for (StripableList::iterator it = stripables.begin(); it != stripables.end(); ++it) {
+
+		boost::shared_ptr<Stripable> s = *it;
+		// we only want routes
+		boost::shared_ptr<Route> r = boost::dynamic_pointer_cast<Route> (s);
+		if (r) {
+			r->processors_changed.connect  (*this, MISSING_INVALIDATOR, boost::bind (&OSC::recalcbanks, this), this);
+			boost::shared_ptr<Send> snd = r->internal_send_for (boost::dynamic_pointer_cast<Route> (aux));
+			if (snd) { // test for send to aux
+				sorted.push_back (s);
+				s->DropReferences.connect (*this, MISSING_INVALIDATOR, boost::bind (&OSC::cue_set, this, id, msg), this);
+			}
+		}
+
+
+	}
+	sort (sorted.begin(), sorted.end(), StripableByPresentationOrder());
+
 	return sorted;
 }
 

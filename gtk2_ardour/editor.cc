@@ -57,6 +57,7 @@
 #include <gtkmm/menuitem.h>
 
 #include "gtkmm2ext/bindings.h"
+#include "gtkmm2ext/eventboxext.h"
 #include "gtkmm2ext/grouped_buttons.h"
 #include "gtkmm2ext/gtk_ui.h"
 #include <gtkmm2ext/keyboard.h>
@@ -112,7 +113,6 @@
 #include "gui_object.h"
 #include "gui_thread.h"
 #include "keyboard.h"
-#include "keyeditor.h"
 #include "luainstance.h"
 #include "marker.h"
 #include "midi_region_view.h"
@@ -343,7 +343,8 @@ Editor::Editor ()
 	, _full_canvas_height (0)
 	, edit_controls_left_menu (0)
 	, edit_controls_right_menu (0)
-	, last_update_frame (0)
+	, _last_update_time (0)
+	, _err_screen_engine (0)
 	, cut_buffer_start (0)
 	, cut_buffer_length (0)
 	, button_bindings (0)
@@ -393,6 +394,7 @@ Editor::Editor ()
 	, _all_region_actions_sensitized (false)
 	, _ignore_region_action (false)
 	, _last_region_menu_was_main (false)
+	, _track_selection_change_without_scroll (false)
 	, cd_marker_bar_drag_rect (0)
 	, range_bar_drag_rect (0)
 	, transport_bar_drag_rect (0)
@@ -578,7 +580,6 @@ Editor::Editor ()
 	_summary = new EditorSummary (this);
 
 	selection->TimeChanged.connect (sigc::mem_fun(*this, &Editor::time_selection_changed));
-	selection->TracksChanged.connect (sigc::mem_fun(*this, &Editor::track_selection_changed));
 
 	editor_regions_selection_changed_connection = selection->RegionsChanged.connect (sigc::mem_fun(*this, &Editor::region_selection_changed));
 
@@ -644,7 +645,7 @@ Editor::Editor ()
 	_regions = new EditorRegions (this);
 	_snapshots = new EditorSnapshots (this);
 	_locations = new EditorLocations (this);
-	_time_info_box = new TimeInfoBox (true);
+	_time_info_box = new TimeInfoBox ("EditorTimeInfo", true);
 
 	/* these are static location signals */
 
@@ -757,9 +758,23 @@ Editor::Editor ()
 	global_vpacker.set_spacing (2);
 	global_vpacker.set_border_width (0);
 
-	global_vpacker.pack_start (toolbar_hbox, false, false);
-	global_vpacker.pack_start (edit_pane, true, true);
-	global_hpacker.pack_start (global_vpacker, true, true);
+	//the next three EventBoxes provide the ability for their child widgets to have a background color.  That is all.
+
+	Gtk::EventBox* ebox = manage (new Gtk::EventBox);  //a themeable box
+	ebox->set_name("EditorWindow");
+	ebox->add (toolbar_hbox);
+
+	Gtk::EventBox* epane_box = manage (new Gtkmm2ext::EventBoxExt);  //a themeable box
+	epane_box->set_name("EditorWindow");
+	epane_box->add (edit_pane);
+
+	Gtk::EventBox* epane_box2 = manage (new Gtkmm2ext::EventBoxExt);  //a themeable box
+	epane_box2->set_name("EditorWindow");
+	epane_box2->add (global_vpacker);
+
+	global_vpacker.pack_start (*ebox, false, false);
+	global_vpacker.pack_start (*epane_box, true, true);
+	global_hpacker.pack_start (*epane_box2, true, true);
 
 	/* need to show the "contents" widget so that notebook will show if tab is switched to
 	 */
@@ -853,9 +868,6 @@ Editor::Editor ()
 
 	setup_fade_images ();
 
-	LuaInstance::instance(); // instantiate
-	LuaInstance::instance()->ActionChanged.connect (sigc::mem_fun (*this, &Editor::set_script_action_name));
-
 	instant_save ();
 }
 
@@ -876,9 +888,20 @@ Editor::~Editor()
 	delete _locations;
 	delete _playlist_selector;
 	delete _time_info_box;
+	delete selection;
+	delete cut_buffer;
+	delete _cursors;
+
+	LuaInstance::destroy_instance ();
 
 	for (list<XMLNode *>::iterator i = selection_op_history.begin(); i != selection_op_history.end(); ++i) {
 		delete *i;
+	}
+	for (std::map<ARDOUR::FadeShape, Gtk::Image*>::const_iterator i = _xfade_in_images.begin(); i != _xfade_in_images.end (); ++i) {
+		delete i->second;
+	}
+	for (std::map<ARDOUR::FadeShape, Gtk::Image*>::const_iterator i = _xfade_out_images.begin(); i != _xfade_out_images.end (); ++i) {
+		delete i->second;
 	}
 }
 
@@ -1365,12 +1388,13 @@ Editor::set_session (Session *t)
 
 	_session->StepEditStatusChange.connect (_session_connections, invalidator (*this), boost::bind (&Editor::step_edit_status_change, this, _1), gui_context());
 	_session->TransportStateChange.connect (_session_connections, invalidator (*this), boost::bind (&Editor::map_transport_state, this), gui_context());
+	_session->TransportLooped.connect (_session_connections, invalidator (*this), boost::bind (&Editor::transport_looped, this), gui_context());
 	_session->PositionChanged.connect (_session_connections, invalidator (*this), boost::bind (&Editor::map_position_change, this, _1), gui_context());
 	_session->vca_manager().VCAAdded.connect (_session_connections, invalidator (*this), boost::bind (&Editor::add_vcas, this, _1), gui_context());
 	_session->RouteAdded.connect (_session_connections, invalidator (*this), boost::bind (&Editor::add_routes, this, _1), gui_context());
 	_session->DirtyChanged.connect (_session_connections, invalidator (*this), boost::bind (&Editor::update_title, this), gui_context());
 	_session->tempo_map().PropertyChanged.connect (_session_connections, invalidator (*this), boost::bind (&Editor::tempo_map_changed, this, _1), gui_context());
-	_session->tempo_map().MetricPositionChanged.connect (_session_connections, invalidator (*this), boost::bind (&Editor::marker_position_changed, this), gui_context());
+	_session->tempo_map().MetricPositionChanged.connect (_session_connections, invalidator (*this), boost::bind (&Editor::tempometric_position_changed, this, _1), gui_context());
 	_session->Located.connect (_session_connections, invalidator (*this), boost::bind (&Editor::located, this), gui_context());
 	_session->config.ParameterChanged.connect (_session_connections, invalidator (*this), boost::bind (&Editor::parameter_changed, this, _1), gui_context());
 	_session->StateSaved.connect (_session_connections, invalidator (*this), boost::bind (&Editor::session_state_saved, this, _1), gui_context());
@@ -1432,28 +1456,9 @@ Editor::set_session (Session *t)
 	_session->register_with_memento_command_factory(id(), this);
 	_session->register_with_memento_command_factory(_selection_memento->id(), _selection_memento);
 
-	ActionManager::ui_manager->signal_pre_activate().connect (sigc::mem_fun (*this, &Editor::action_pre_activated));
-
 	LuaInstance::instance()->set_session(_session);
 
 	start_updating_meters ();
-}
-
-void
-Editor::action_pre_activated (Glib::RefPtr<Action> const & a)
-{
-	if (a->get_name() == "RegionMenu") {
-		/* When the main menu's region menu is opened, we setup the actions so that they look right
-		   in the menu.  I can't find a way of getting a signal when this menu is subsequently closed,
-		   so we resensitize all region actions when the entered regionview or the region selection
-		   changes.  HOWEVER we can't always resensitize on entered_regionview change because that
-		   happens after the region context menu is opened.  So we set a flag here, too.
-
-		   What a carry on :(
-		*/
-		sensitize_the_right_region_actions ();
-		_last_region_menu_was_main = true;
-	}
 }
 
 void
@@ -1683,7 +1688,7 @@ Editor::popup_track_context_menu (int button, int32_t time, ItemType item_type, 
 	/* When the region menu is opened, we setup the actions so that they look right
 	   in the menu.
 	*/
-	sensitize_the_right_region_actions ();
+	sensitize_the_right_region_actions (false);
 	_last_region_menu_was_main = false;
 
 	menu->signal_hide().connect (sigc::bind (sigc::mem_fun (*this, &Editor::sensitize_all_region_actions), true));
@@ -1920,7 +1925,7 @@ Editor::add_region_context_items (Menu_Helpers::MenuList& edit_items, boost::sha
 		_popup_region_menu_item->set_label (menu_item_name);
 	}
 
-	/* No latering allowed in later is higher layering model */
+	/* No layering allowed in later is higher layering model */
 	RefPtr<Action> act = ActionManager::get_action (X_("EditorMenu"), X_("RegionMenuLayering"));
 	if (act && Config->get_layer_model() == LaterHigher) {
 		act->set_sensitive (false);
@@ -2331,6 +2336,7 @@ Editor::set_edit_point_preference (EditPoint ep, bool force)
 	}
 
 	reset_canvas_action_sensitivity (in_track_canvas);
+	sensitize_the_right_region_actions (false);
 
 	instant_save ();
 }
@@ -2518,6 +2524,7 @@ Editor::set_state (const XMLNode& node, int version)
 	for (XMLNodeList::const_iterator i = children.begin(); i != children.end(); ++i) {
 		selection->set_state (**i, Stateful::current_state_version);
 		_regions->set_state (**i);
+		_locations->set_state (**i);
 	}
 
 	if ((prop = node.property ("maximised"))) {
@@ -2659,6 +2666,7 @@ Editor::get_state ()
 
 	node->add_child_nocopy (LuaInstance::instance()->get_action_state());
 	node->add_child_nocopy (LuaInstance::instance()->get_hook_state());
+	node->add_child_nocopy (_locations->get_state ());
 
 	return *node;
 }
@@ -2700,7 +2708,7 @@ Editor::trackview_by_y_position (double y, bool trackview_relative_offset) const
  *  @param event Event to get current key modifier information from, or 0.
  */
 void
-Editor::snap_to_with_modifier (framepos_t& start, GdkEvent const * event, RoundMode direction, bool for_mark)
+Editor::snap_to_with_modifier (MusicFrame& start, GdkEvent const * event, RoundMode direction, bool for_mark)
 {
 	if (!_session || !event) {
 		return;
@@ -2709,6 +2717,8 @@ Editor::snap_to_with_modifier (framepos_t& start, GdkEvent const * event, RoundM
 	if (ArdourKeyboard::indicates_snap (event->button.state)) {
 		if (_snap_mode == SnapOff) {
 			snap_to_internal (start, direction, for_mark);
+		} else {
+			start.set (start.frame, 0);
 		}
 	} else {
 		if (_snap_mode != SnapOff) {
@@ -2716,14 +2726,17 @@ Editor::snap_to_with_modifier (framepos_t& start, GdkEvent const * event, RoundM
 		} else if (ArdourKeyboard::indicates_snap_delta (event->button.state)) {
 			/* SnapOff, but we pressed the snap_delta modifier */
 			snap_to_internal (start, direction, for_mark);
+		} else {
+			start.set (start.frame, 0);
 		}
 	}
 }
 
 void
-Editor::snap_to (framepos_t& start, RoundMode direction, bool for_mark, bool ensure_snap)
+Editor::snap_to (MusicFrame& start, RoundMode direction, bool for_mark, bool ensure_snap)
 {
 	if (!_session || (_snap_mode == SnapOff && !ensure_snap)) {
+		start.set (start.frame, 0);
 		return;
 	}
 
@@ -2731,8 +2744,9 @@ Editor::snap_to (framepos_t& start, RoundMode direction, bool for_mark, bool ens
 }
 
 void
-Editor::timecode_snap_to_internal (framepos_t& start, RoundMode direction, bool /*for_mark*/)
+Editor::timecode_snap_to_internal (MusicFrame& pos, RoundMode direction, bool /*for_mark*/)
 {
+	framepos_t start = pos.frame;
 	const framepos_t one_timecode_second = (framepos_t)(rint(_session->timecode_frames_per_second()) * _session->samples_per_timecode_frame());
 	framepos_t one_timecode_minute = (framepos_t)(rint(_session->timecode_frames_per_second()) * _session->samples_per_timecode_frame() * 60);
 
@@ -2794,14 +2808,16 @@ Editor::timecode_snap_to_internal (framepos_t& start, RoundMode direction, bool 
 		fatal << "Editor::smpte_snap_to_internal() called with non-timecode snap type!" << endmsg;
 		abort(); /*NOTREACHED*/
 	}
+
+	pos.set (start, 0);
 }
 
 void
-Editor::snap_to_internal (framepos_t& start, RoundMode direction, bool for_mark, bool ensure_snap)
+Editor::snap_to_internal (MusicFrame& start, RoundMode direction, bool for_mark, bool ensure_snap)
 {
 	const framepos_t one_second = _session->frame_rate();
 	const framepos_t one_minute = _session->frame_rate() * 60;
-	framepos_t presnap = start;
+	framepos_t presnap = start.frame;
 	framepos_t before;
 	framepos_t after;
 
@@ -2813,95 +2829,104 @@ Editor::snap_to_internal (framepos_t& start, RoundMode direction, bool for_mark,
 
 	case SnapToCDFrame:
 		if ((direction == RoundUpMaybe || direction == RoundDownMaybe) &&
-		    start % (one_second/75) == 0) {
+		    start.frame % (one_second/75) == 0) {
 			/* start is already on a whole CD frame, do nothing */
-		} else if (((direction == 0) && (start % (one_second/75) > (one_second/75) / 2)) || (direction > 0)) {
-			start = (framepos_t) ceil ((double) start / (one_second / 75)) * (one_second / 75);
+		} else if (((direction == 0) && (start.frame % (one_second/75) > (one_second/75) / 2)) || (direction > 0)) {
+			start.frame = (framepos_t) ceil ((double) start.frame / (one_second / 75)) * (one_second / 75);
 		} else {
-			start = (framepos_t) floor ((double) start / (one_second / 75)) * (one_second / 75);
+			start.frame = (framepos_t) floor ((double) start.frame / (one_second / 75)) * (one_second / 75);
 		}
+
+		start.set (start.frame, 0);
+
 		break;
 
 	case SnapToSeconds:
 		if ((direction == RoundUpMaybe || direction == RoundDownMaybe) &&
-		    start % one_second == 0) {
+		    start.frame % one_second == 0) {
 			/* start is already on a whole second, do nothing */
-		} else if (((direction == 0) && (start % one_second > one_second / 2)) || (direction > 0)) {
-			start = (framepos_t) ceil ((double) start / one_second) * one_second;
+		} else if (((direction == 0) && (start.frame % one_second > one_second / 2)) || (direction > 0)) {
+			start.frame = (framepos_t) ceil ((double) start.frame / one_second) * one_second;
 		} else {
-			start = (framepos_t) floor ((double) start / one_second) * one_second;
+			start.frame = (framepos_t) floor ((double) start.frame / one_second) * one_second;
 		}
+
+		start.set (start.frame, 0);
+
 		break;
 
 	case SnapToMinutes:
 		if ((direction == RoundUpMaybe || direction == RoundDownMaybe) &&
-		    start % one_minute == 0) {
+		    start.frame % one_minute == 0) {
 			/* start is already on a whole minute, do nothing */
-		} else if (((direction == 0) && (start % one_minute > one_minute / 2)) || (direction > 0)) {
-			start = (framepos_t) ceil ((double) start / one_minute) * one_minute;
+		} else if (((direction == 0) && (start.frame % one_minute > one_minute / 2)) || (direction > 0)) {
+			start.frame = (framepos_t) ceil ((double) start.frame / one_minute) * one_minute;
 		} else {
-			start = (framepos_t) floor ((double) start / one_minute) * one_minute;
+			start.frame = (framepos_t) floor ((double) start.frame / one_minute) * one_minute;
 		}
+
+		start.set (start.frame, 0);
+
 		break;
 
 	case SnapToBar:
-		start = _session->tempo_map().round_to_bar (start, direction);
+		start = _session->tempo_map().round_to_bar (start.frame, direction);
 		break;
 
 	case SnapToBeat:
-		start = _session->tempo_map().round_to_beat (start, direction);
+		start = _session->tempo_map().round_to_beat (start.frame, direction);
 		break;
 
 	case SnapToBeatDiv128:
-		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 128, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start.frame, 128, direction);
 		break;
 	case SnapToBeatDiv64:
-		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 64, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start.frame, 64, direction);
 		break;
 	case SnapToBeatDiv32:
-		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 32, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start.frame, 32, direction);
 		break;
 	case SnapToBeatDiv28:
-		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 28, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start.frame, 28, direction);
 		break;
 	case SnapToBeatDiv24:
-		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 24, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start.frame, 24, direction);
 		break;
 	case SnapToBeatDiv20:
-		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 20, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start.frame, 20, direction);
 		break;
 	case SnapToBeatDiv16:
-		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 16, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start.frame, 16, direction);
 		break;
 	case SnapToBeatDiv14:
-		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 14, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start.frame, 14, direction);
 		break;
 	case SnapToBeatDiv12:
-		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 12, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start.frame, 12, direction);
 		break;
 	case SnapToBeatDiv10:
-		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 10, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start.frame, 10, direction);
 		break;
 	case SnapToBeatDiv8:
-		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 8, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start.frame, 8, direction);
 		break;
 	case SnapToBeatDiv7:
-		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 7, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start.frame, 7, direction);
 		break;
 	case SnapToBeatDiv6:
-		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 6, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start.frame, 6, direction);
 		break;
 	case SnapToBeatDiv5:
-		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 5, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start.frame, 5, direction);
 		break;
 	case SnapToBeatDiv4:
-		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 4, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start.frame, 4, direction);
 		break;
 	case SnapToBeatDiv3:
-		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 3, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start.frame, 3, direction);
 		break;
 	case SnapToBeatDiv2:
-		start = _session->tempo_map().round_to_quarter_note_subdivision (start, 2, direction);
+		start = _session->tempo_map().round_to_quarter_note_subdivision (start.frame, 2, direction);
 		break;
 
 	case SnapToMark:
@@ -2909,28 +2934,30 @@ Editor::snap_to_internal (framepos_t& start, RoundMode direction, bool for_mark,
 			return;
 		}
 
-		_session->locations()->marks_either_side (start, before, after);
+		_session->locations()->marks_either_side (start.frame, before, after);
 
 		if (before == max_framepos && after == max_framepos) {
 			/* No marks to snap to, so just don't snap */
 			return;
 		} else if (before == max_framepos) {
-			start = after;
+			start.frame = after;
 		} else if (after == max_framepos) {
-			start = before;
+			start.frame = before;
 		} else if (before != max_framepos && after != max_framepos) {
 			if ((direction == RoundUpMaybe || direction == RoundUpAlways))
-				start = after;
+				start.frame = after;
 			else if ((direction == RoundDownMaybe || direction == RoundDownAlways))
-				start = before;
+				start.frame = before;
 			else if (direction ==  0 ) {
-				if ((start - before) < (after - start)) {
-					start = before;
+				if ((start.frame - before) < (after - start.frame)) {
+					start.frame = before;
 				} else {
-					start = after;
+					start.frame = after;
 				}
 			}
 		}
+
+		start.set (start.frame, 0);
 
 		break;
 
@@ -2944,9 +2971,9 @@ Editor::snap_to_internal (framepos_t& start, RoundMode direction, bool for_mark,
 			vector<framepos_t>::iterator next = region_boundary_cache.end ();
 
 			if (direction > 0) {
-				next = std::upper_bound (region_boundary_cache.begin(), region_boundary_cache.end(), start);
+				next = std::upper_bound (region_boundary_cache.begin(), region_boundary_cache.end(), start.frame);
 			} else {
-				next = std::lower_bound (region_boundary_cache.begin(), region_boundary_cache.end(), start);
+				next = std::lower_bound (region_boundary_cache.begin(), region_boundary_cache.end(), start.frame);
 			}
 
 			if (next != region_boundary_cache.begin ()) {
@@ -2957,12 +2984,15 @@ Editor::snap_to_internal (framepos_t& start, RoundMode direction, bool for_mark,
 			framepos_t const p = (prev == region_boundary_cache.end()) ? region_boundary_cache.front () : *prev;
 			framepos_t const n = (next == region_boundary_cache.end()) ? region_boundary_cache.back () : *next;
 
-			if (start > (p + n) / 2) {
-				start = n;
+			if (start.frame > (p + n) / 2) {
+				start.frame = n;
 			} else {
-				start = p;
+				start.frame = p;
 			}
 		}
+
+		start.set (start.frame, 0);
+
 		break;
 	}
 
@@ -2976,21 +3006,20 @@ Editor::snap_to_internal (framepos_t& start, RoundMode direction, bool for_mark,
 			return;
 		}
 
-		if (presnap > start) {
-			if (presnap > (start + pixel_to_sample(snap_threshold))) {
-				start = presnap;
+		if (presnap > start.frame) {
+			if (presnap > (start.frame + pixel_to_sample(snap_threshold))) {
+				start.set (presnap, 0);
 			}
 
-		} else if (presnap < start) {
-			if (presnap < (start - pixel_to_sample(snap_threshold))) {
-				start = presnap;
+		} else if (presnap < start.frame) {
+			if (presnap < (start.frame - pixel_to_sample(snap_threshold))) {
+				start.set (presnap, 0);
 			}
 		}
 
 	default:
 		/* handled at entry */
 		return;
-
 	}
 }
 
@@ -3418,6 +3447,15 @@ Editor::map_transport_state ()
 	}
 
 	update_loop_range_view ();
+}
+
+void
+Editor::transport_looped ()
+{
+	/* reset Playhead position interpolation.
+	 * see Editor::super_rapid_screen_update
+	 */
+	_last_update_time = 0;
 }
 
 /* UNDO/REDO */
@@ -4033,9 +4071,9 @@ Editor::get_paste_offset (framepos_t pos, unsigned paste_count, framecnt_t durat
 	framecnt_t offset = paste_count * duration;
 
 	/* snap offset so pos + offset is aligned to the grid */
-	framepos_t offset_pos = pos + offset;
+	MusicFrame offset_pos (pos + offset, 0);
 	snap_to(offset_pos, RoundUpMaybe);
-	offset = offset_pos - pos;
+	offset = offset_pos.frame - pos;
 
 	return offset;
 }
@@ -4641,7 +4679,7 @@ Editor::visual_changer (const VisualChange& vc)
 	}
 
 	if (vc.pending & VisualChange::TimeOrigin) {
-		set_horizontal_position (vc.time_origin / samples_per_pixel);
+		set_horizontal_position (sample_to_pixel_unrounded (vc.time_origin));
 	}
 
 	if (vc.pending & VisualChange::YOrigin) {
@@ -4690,7 +4728,7 @@ Editor::get_preferred_edit_position (EditIgnoreOption ignore, bool from_context_
 	if (from_outside_canvas && (ep == EditAtMouse)) {
 		ep = EditAtPlayhead;
 	} else if (from_context_menu && (ep == EditAtMouse)) {
-		return  canvas_event_sample (&context_click_event, 0, 0);
+		return canvas_event_sample (&context_click_event, 0, 0);
 	}
 
 	if (entered_marker) {
@@ -4706,9 +4744,11 @@ Editor::get_preferred_edit_position (EditIgnoreOption ignore, bool from_context_
 		ep = EditAtPlayhead;
 	}
 
+	MusicFrame snap_mf (0, 0);
+
 	switch (ep) {
 	case EditAtPlayhead:
-		if (_dragging_playhead) {
+		if (_dragging_playhead && _control_scroll_target) {
 			where = *_control_scroll_target;
 		} else {
 			where = _session->audible_frame();
@@ -4738,7 +4778,9 @@ Editor::get_preferred_edit_position (EditIgnoreOption ignore, bool from_context_
 			/* XXX not right but what can we do ? */
 			return 0;
 		}
-		snap_to (where);
+		snap_mf.frame = where;
+		snap_to (snap_mf);
+		where = snap_mf.frame;
                 DEBUG_TRACE (DEBUG::CutNPaste, string_compose ("GPEP: use mouse @ %1\n", where));
 		break;
 	}
@@ -4756,7 +4798,7 @@ Editor::set_loop_range (framepos_t start, framepos_t end, string cmd)
 	Location* tll;
 
 	if ((tll = transport_loop_location()) == 0) {
-		Location* loc = new Location (*_session, start, end, _("Loop"),  Location::IsAutoLoop);
+		Location* loc = new Location (*_session, start, end, _("Loop"),  Location::IsAutoLoop, get_grid_music_divisions(0));
 		XMLNode &before = _session->locations()->get_state();
 		_session->locations()->add (loc, true);
 		_session->set_auto_loop_location (loc);
@@ -4783,7 +4825,7 @@ Editor::set_punch_range (framepos_t start, framepos_t end, string cmd)
 	Location* tpl;
 
 	if ((tpl = transport_punch_location()) == 0) {
-		Location* loc = new Location (*_session, start, end, _("Punch"),  Location::IsAutoPunch);
+		Location* loc = new Location (*_session, start, end, _("Punch"),  Location::IsAutoPunch, get_grid_music_divisions(0));
 		XMLNode &before = _session->locations()->get_state();
 		_session->locations()->add (loc, true);
 		_session->set_auto_punch_location (loc);
@@ -4888,7 +4930,7 @@ Editor::get_regions_after (RegionSelection& rs, framepos_t where, const TrackVie
  */
 
 RegionSelection
-Editor::get_regions_from_selection_and_edit_point ()
+Editor::get_regions_from_selection_and_edit_point (EditIgnoreOption ignore, bool from_context_menu, bool from_outside_canvas)
 {
 	RegionSelection regions;
 
@@ -4905,7 +4947,7 @@ Editor::get_regions_from_selection_and_edit_point ()
 			/* no region selected or entered, but some selected tracks:
 			 * act on all regions on the selected tracks at the edit point
 			 */
-			framepos_t const where = get_preferred_edit_position ();
+			framepos_t const where = get_preferred_edit_position (ignore, from_context_menu, from_outside_canvas);
 			get_regions_at(regions, where, tracks);
 		}
 	}
@@ -5047,6 +5089,38 @@ Editor::get_regions_corresponding_to (boost::shared_ptr<Region> region, vector<R
 	}
 }
 
+RegionView*
+Editor::regionview_from_region (boost::shared_ptr<Region> region) const
+{
+	for (TrackViewList::const_iterator i = track_views.begin(); i != track_views.end(); ++i) {
+		RouteTimeAxisView* tatv;
+		if ((tatv = dynamic_cast<RouteTimeAxisView*> (*i)) != 0) {
+			if (!tatv->track()) {
+				continue;
+			}
+			RegionView* marv = tatv->view()->find_view (region);
+			if (marv) {
+				return marv;
+			}
+		}
+	}
+	return NULL;
+}
+
+RouteTimeAxisView*
+Editor::rtav_from_route (boost::shared_ptr<Route> route) const
+{
+	for (TrackViewList::const_iterator i = track_views.begin(); i != track_views.end(); ++i) {
+		RouteTimeAxisView* rtav;
+		if ((rtav = dynamic_cast<RouteTimeAxisView*> (*i)) != 0) {
+			if (rtav->route() == route) {
+				return rtav;
+			}
+		}
+	}
+	return NULL;
+}
+
 void
 Editor::show_rhythm_ferret ()
 {
@@ -5077,6 +5151,17 @@ Editor::first_idle ()
 	for (TrackViewList::iterator t = track_views.begin(); t != track_views.end(); ++t) {
 		(*t)->first_idle();
 	}
+
+	/* now that all regionviews should exist, setup region selection */
+
+	RegionSelection rs;
+
+	for (list<PBD::ID>::iterator pr = selection->regions.pending.begin (); pr != selection->regions.pending.end (); ++pr) {
+		/* this is cumulative: rs is NOT cleared each time */
+		get_regionviews_by_id (*pr, rs);
+	}
+
+	selection->set (rs);
 
 	// first idle adds route children (automation tracks), so we need to redisplay here
 	_routes->redisplay ();
@@ -5173,19 +5258,12 @@ Editor::located ()
 
 	_pending_locate_request = false;
 	_pending_initial_locate = false;
+	_last_update_time = 0;
 }
 
 void
 Editor::region_view_added (RegionView * rv)
 {
-	for (list<PBD::ID>::iterator pr = selection->regions.pending.begin (); pr != selection->regions.pending.end (); ++pr) {
-		if (rv->region ()->id () == (*pr)) {
-			selection->add (rv);
-			selection->regions.pending.erase (pr);
-			break;
-		}
-	}
-
 	MidiRegionView* mrv = dynamic_cast<MidiRegionView*> (rv);
 	if (mrv) {
 		list<pair<PBD::ID const, list<Evoral::event_id_t> > >::iterator rnote;
@@ -5335,8 +5413,7 @@ Editor::add_stripables (StripableList& sl)
 	 */
 
 	if (!from_scratch && !new_selection.empty()) {
-		selection->tracks.clear();
-		selection->add (new_selection);
+		selection->set (new_selection);
 		begin_selection_op_history();
 	}
 
@@ -5400,6 +5477,16 @@ Editor::timeaxisview_deleted (TimeAxisView *tv)
 			next_tv = (*i);
 		}
 
+		// skip VCAs (cannot be selected, n/a in editor-mixer)
+		if (dynamic_cast<VCATimeAxisView*> (next_tv)) {
+			/* VCAs are sorted last in line -- route_sorter.h, jump to top */
+			next_tv = track_views.front();
+		}
+		if (dynamic_cast<VCATimeAxisView*> (next_tv)) {
+			/* just in case: no master, only a VCA remains */
+			next_tv = 0;
+		}
+
 
 		if (next_tv) {
 			set_selected_mixer_strip (*next_tv);
@@ -5416,6 +5503,9 @@ Editor::timeaxisview_deleted (TimeAxisView *tv)
 void
 Editor::hide_track_in_display (TimeAxisView* tv, bool apply_to_selection)
 {
+	if (!tv) {
+		return;
+	}
 	if (apply_to_selection) {
 		for (TrackSelection::iterator i = selection->tracks.begin(); i != selection->tracks.end(); ) {
 
@@ -5435,6 +5525,18 @@ Editor::hide_track_in_display (TimeAxisView* tv, bool apply_to_selection)
 		}
 
 		_routes->hide_track_in_display (*tv);
+	}
+}
+
+void
+Editor::show_track_in_display (TimeAxisView* tv, bool move_into_view)
+{
+	if (!tv) {
+		return;
+	}
+	_routes->show_track_in_display (*tv);
+	if (move_into_view) {
+		ensure_time_axis_view_is_visible (*tv, false);
 	}
 }
 
@@ -5690,8 +5792,6 @@ Editor::super_rapid_screen_update ()
 
 	/* PLAYHEAD AND VIEWPORT */
 
-	framepos_t const frame = _session->audible_frame();
-
 	/* There are a few reasons why we might not update the playhead / viewport stuff:
 	 *
 	 * 1.  we don't update things when there's a pending locate request, otherwise
@@ -5701,46 +5801,83 @@ Editor::super_rapid_screen_update ()
 	 * 2.  if we're not rolling, there's nothing to do here (locates are handled elsewhere).
 	 * 3.  if we're still at the same frame that we were last time, there's nothing to do.
 	 */
+	if (_pending_locate_request || !_session->transport_rolling ()) {
+		_last_update_time = 0;
+		return;
+	}
 
-	if (!_pending_locate_request && _session->transport_speed() != 0 && frame != last_update_frame) {
+	if (_dragging_playhead) {
+		_last_update_time = 0;
+		return;
+	}
 
-		last_update_frame = frame;
+	bool latent_locate = false;
+	framepos_t frame = _session->audible_frame (&latent_locate);
+	const int64_t now = g_get_monotonic_time ();
+	double err = 0;
 
-		if (!_dragging_playhead) {
-			playhead_cursor->set_position (frame);
+	if (_last_update_time > 0) {
+		const double ds =  (now - _last_update_time) * _session->transport_speed() * _session->nominal_frame_rate () * 1e-6;
+		framepos_t guess = playhead_cursor->current_frame () + rint (ds);
+		err = frame - guess;
+
+		guess += err * .12 + _err_screen_engine; // time-constant based on 25fps (super_rapid_screen_update)
+		_err_screen_engine += .0144 * (err - _err_screen_engine); // tc^2
+
+#if 0 // DEBUG
+		printf ("eng: %ld  gui:%ld (%+6.1f)  diff: %6.1f (err: %7.2f)\n",
+				frame, guess, ds,
+				err, _err_screen_engine);
+#endif
+
+		frame = guess;
+	} else {
+		_err_screen_engine = 0;
+	}
+
+	if (err > 8192 || latent_locate) {
+		// in case of x-runs or freewheeling
+		_last_update_time = 0;
+	} else {
+		_last_update_time = now;
+	}
+
+	if (playhead_cursor->current_frame () == frame) {
+		return;
+	}
+
+	playhead_cursor->set_position (frame);
+
+	if (_session->requested_return_frame() >= 0) {
+		_last_update_time = 0;
+		return;
+	}
+
+	if (!_follow_playhead || pending_visual_change.being_handled) {
+		/* We only do this if we aren't already
+		 * handling a visual change (ie if
+		 * pending_visual_change.being_handled is
+		 * false) so that these requests don't stack
+		 * up there are too many of them to handle in
+		 * time.
+		 */
+		return;
+	}
+
+	if (!_stationary_playhead) {
+		reset_x_origin_to_follow_playhead ();
+	} else {
+		framepos_t const frame = playhead_cursor->current_frame ();
+		double target = ((double)frame - (double)current_page_samples() / 2.0);
+		if (target <= 0.0) {
+			target = 0.0;
 		}
-
-		if (!_stationary_playhead) {
-
-			if (!_dragging_playhead && _follow_playhead && _session->requested_return_frame() < 0 && !pending_visual_change.being_handled) {
-				/* We only do this if we aren't already
-				   handling a visual change (ie if
-				   pending_visual_change.being_handled is
-				   false) so that these requests don't stack
-				   up there are too many of them to handle in
-				   time.
-				*/
-				reset_x_origin_to_follow_playhead ();
-			}
-
-		} else {
-
-			if (!_dragging_playhead && _follow_playhead && _session->requested_return_frame() < 0 && !pending_visual_change.being_handled) {
-				framepos_t const frame = playhead_cursor->current_frame ();
-				double target = ((double)frame - (double)current_page_samples()/2.0);
-				if (target <= 0.0) {
-					target = 0.0;
-				}
-				// compare to EditorCursor::set_position()
-				double const old_pos = sample_to_pixel_unrounded (leftmost_frame);
-				double const new_pos = sample_to_pixel_unrounded (target);
-				if (rint (new_pos) != rint (old_pos)) {
-					reset_x_origin (pixel_to_sample (floor (new_pos)));
-				}
-			}
-
+		// compare to EditorCursor::set_position()
+		double const old_pos = sample_to_pixel_unrounded (leftmost_frame);
+		double const new_pos = sample_to_pixel_unrounded (target);
+		if (rint (new_pos) != rint (old_pos)) {
+			reset_x_origin (pixel_to_sample (new_pos));
 		}
-
 	}
 }
 
@@ -5762,7 +5899,7 @@ Editor::session_going_away ()
 	clicked_routeview = 0;
 	entered_regionview = 0;
 	entered_track = 0;
-	last_update_frame = 0;
+	_last_update_time = 0;
 	_drags->abort ();
 
 	playhead_cursor->hide ();
@@ -5824,24 +5961,6 @@ Editor::trigger_script (int i)
 }
 
 void
-Editor::set_script_action_name (int i, const std::string& n)
-{
-	string const a = string_compose (X_("script-action-%1"), i + 1);
-	Glib::RefPtr<Action> act = ActionManager::get_action(X_("Editor"), a.c_str());
-	assert (act);
-	if (n.empty ()) {
-		act->set_label (string_compose (_("Unset #%1"), i + 1));
-		act->set_tooltip (_("no action bound"));
-		act->set_sensitive (false);
-	} else {
-		act->set_label (n);
-		act->set_tooltip (n);
-		act->set_sensitive (true);
-	}
-	KeyEditor::UpdateBindings ();
-}
-
-void
 Editor::show_editor_list (bool yn)
 {
 	if (yn) {
@@ -5894,18 +6013,6 @@ Editor::update_region_layering_order_editor ()
 void
 Editor::setup_fade_images ()
 {
-	_fade_in_images[FadeLinear] = new Gtk::Image (get_icon_path (X_("fadein-linear")));
-	_fade_in_images[FadeSymmetric] = new Gtk::Image (get_icon_path (X_("fadein-symmetric")));
-	_fade_in_images[FadeFast] = new Gtk::Image (get_icon_path (X_("fadein-fast-cut")));
-	_fade_in_images[FadeSlow] = new Gtk::Image (get_icon_path (X_("fadein-slow-cut")));
-	_fade_in_images[FadeConstantPower] = new Gtk::Image (get_icon_path (X_("fadein-constant-power")));
-
-	_fade_out_images[FadeLinear] = new Gtk::Image (get_icon_path (X_("fadeout-linear")));
-	_fade_out_images[FadeSymmetric] = new Gtk::Image (get_icon_path (X_("fadeout-symmetric")));
-	_fade_out_images[FadeFast] = new Gtk::Image (get_icon_path (X_("fadeout-fast-cut")));
-	_fade_out_images[FadeSlow] = new Gtk::Image (get_icon_path (X_("fadeout-slow-cut")));
-	_fade_out_images[FadeConstantPower] = new Gtk::Image (get_icon_path (X_("fadeout-constant-power")));
-
 	_xfade_in_images[FadeLinear] = new Gtk::Image (get_icon_path (X_("fadein-linear")));
 	_xfade_in_images[FadeSymmetric] = new Gtk::Image (get_icon_path (X_("fadein-symmetric")));
 	_xfade_in_images[FadeFast] = new Gtk::Image (get_icon_path (X_("fadein-fast-cut")));

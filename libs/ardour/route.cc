@@ -905,6 +905,13 @@ int
 Route::add_processors (const ProcessorList& others, boost::shared_ptr<Processor> before, ProcessorStreams* err)
 {
 	ProcessorList::iterator loc;
+	boost::shared_ptr <PluginInsert> fanout;
+
+	if (g_atomic_int_get (&_pending_process_reorder)) {
+		/* we need to flush any pending re-order changes */
+		Glib::Threads::Mutex::Lock lx (AudioEngine::instance()->process_lock ());
+		apply_processor_changes_rt ();
+	}
 
 	if (before) {
 		loc = find(_processors.begin(), _processors.end(), before);
@@ -963,7 +970,8 @@ Route::add_processors (const ProcessorList& others, boost::shared_ptr<Processor>
 
 		if (flags != None) {
 			boost::optional<int> rv = PluginSetup (shared_from_this (), pi, flags);  /* EMIT SIGNAL */
-			switch (rv.get_value_or (0)) {
+			int mode = rv.get_value_or (0);
+			switch (mode & 3) {
 				case 1:
 					to_skip.push_back (*i); // don't add this one;
 					break;
@@ -973,6 +981,9 @@ Route::add_processors (const ProcessorList& others, boost::shared_ptr<Processor>
 					break;
 				default:
 					break;
+			}
+			if ((mode & 5) == 4) {
+				fanout = pi;
 			}
 		}
 	}
@@ -1060,6 +1071,11 @@ Route::add_processors (const ProcessorList& others, boost::shared_ptr<Processor>
 	processors_changed (RouteProcessorChange ()); /* EMIT SIGNAL */
 	set_processor_positions ();
 
+	if (fanout && fanout->configured ()
+			&& fanout->output_streams().n_audio() > 2
+			&& boost::dynamic_pointer_cast<PluginInsert> (the_instrument ()) == fanout) {
+		fan_out (); /* EMIT SIGNAL */
+	}
 	return 0;
 }
 
@@ -1160,6 +1176,14 @@ Route::ab_plugins (bool forward)
 			if (!boost::dynamic_pointer_cast<PluginInsert> (*i)) {
 				continue;
 			}
+			if (!(*i)->display_to_user ()) {
+				continue;
+			}
+#ifdef MIXBUS
+			if (boost::dynamic_pointer_cast<PluginInsert> (*i)->is_channelstrip()) {
+				continue;
+			}
+#endif
 
 			if ((*i)->enabled ()) {
 				(*i)->enable (false);
@@ -1174,10 +1198,17 @@ Route::ab_plugins (bool forward)
 		/* backward = if the redirect was marked to go active on the next ab, do so */
 
 		for (ProcessorList::iterator i = _processors.begin(); i != _processors.end(); ++i) {
-
 			if (!boost::dynamic_pointer_cast<PluginInsert> (*i)) {
 				continue;
 			}
+			if (!(*i)->display_to_user ()) {
+				continue;
+			}
+#ifdef MIXBUS
+			if (boost::dynamic_pointer_cast<PluginInsert> (*i)->is_channelstrip()) {
+				continue;
+			}
+#endif
 
 			(*i)->enable ((*i)->get_next_ab_is_active ());
 		}
@@ -1663,13 +1694,21 @@ Route::try_configure_processors_unlocked (ChanCount in, ProcessorStreams* err)
 			if (is_monitor()) {
 				// restriction for Monitor Section Processors
 				if (in.n_audio() != out.n_audio() || out.n_midi() > 0) {
-					/* do not allow to add/remove channels (for now)
-					 * The Monitor follows the master-bus and has no panner (unpan)
-					 * but do allow processors with midi-in to be added (e.g VSTs with control that
-					 * will remain unconnected)
+					/* Note: The Monitor follows the master-bus and has no panner.
+					 *
+					 * The general idea is to only allow plugins that retain the channel-count
+					 * and plugins with MIDI in (e.g VSTs with control that will remain unconnected).
+					 * Then again 5.1 in, monitor stereo is a valid use-case.
+					 *
+					 * and worse: we only refuse adding plugins *here*.
+					 *
+					 * 1) stereo-master, stereo-mon, add a stereo-plugin, OK
+					 * 2) change master-bus, add a channel
+					 * 2a) monitor-secion follows
+					 * 3) monitor processors fail to re-reconfigure (stereo plugin)
+					 * 4) re-load session, monitor-processor remains unconfigured, crash.
 					 */
-					DEBUG_TRACE (DEBUG::Processors, "Monitor: Channel configuration not allowed.\n");
-					return list<pair<ChanCount, ChanCount> > ();
+					DEBUG_TRACE (DEBUG::Processors, "Monitor: Channel configuration change.\n");
 				}
 				if (boost::dynamic_pointer_cast<InternalSend> (*p)) {
 					// internal sends make no sense, only feedback
@@ -1839,6 +1878,14 @@ Route::all_visible_processors_active (bool state)
 		if (!(*i)->display_to_user() || boost::dynamic_pointer_cast<Amp> (*i)) {
 			continue;
 		}
+#ifdef MIXBUS
+		boost::shared_ptr<PluginInsert> pi;
+		if (0 != (pi = boost::dynamic_pointer_cast<PluginInsert>(*i))) {
+			if (pi->is_channelstrip ()) {
+				continue;
+			}
+		}
+#endif
 		(*i)->enable (state);
 	}
 
@@ -1960,6 +2007,35 @@ Route::apply_processor_order (const ProcessorList& new_order)
 
 	/* If the meter is in a custom position, find it and make a rough note of its position */
 	maybe_note_meter_position ();
+}
+
+void
+Route::move_instrument_down (bool postfader)
+{
+	Glib::Threads::RWLock::ReaderLock lm (_processor_lock);
+	ProcessorList new_order;
+	boost::shared_ptr<Processor> instrument;
+	for (ProcessorList::const_iterator i = _processors.begin(); i != _processors.end(); ++i) {
+		boost::shared_ptr<PluginInsert> pi = boost::dynamic_pointer_cast<PluginInsert>(*i);
+		if (pi && pi->plugin ()->get_info ()->is_instrument ()) {
+			instrument = *i;
+		} else if (instrument && *i == _amp) {
+			if (postfader) {
+				new_order.push_back (*i);
+				new_order.push_back (instrument);
+			} else {
+				new_order.push_back (instrument);
+				new_order.push_back (*i);
+			}
+		} else {
+			new_order.push_back (*i);
+		}
+	}
+	if (!instrument) {
+		return;
+	}
+	lm.release ();
+	reorder_processors (new_order, 0);
 }
 
 int
@@ -2235,7 +2311,6 @@ Route::state(bool full_state)
 {
 	LocaleGuard lg;
 	if (!_session._template_state_dir.empty()) {
-		assert (!full_state); // only for templates
 		foreach_processor (sigc::bind (sigc::mem_fun (*this, &Route::set_plugin_state_dir), _session._template_state_dir));
 	}
 
@@ -2426,6 +2501,11 @@ Route::set_state (const XMLNode& node, int version)
 
 	if ((prop = node.property (X_("denormal-protection"))) != 0) {
 		set_denormal_protection (string_is_affirmative (prop->value()));
+	}
+
+	/* convert old 3001 state */
+	if ((prop = node.property (X_("phase-invert"))) != 0) {
+		_phase_control->set_phase_invert (boost::dynamic_bitset<> (prop->value ()));
 	}
 
 	if ((prop = node.property (X_("active"))) != 0) {
@@ -3337,46 +3417,56 @@ Route::output_change_handler (IOChange change, void * /*src*/)
 		io_changed (); /* EMIT SIGNAL */
 	}
 
-	if (_solo_control->soloed_by_others_downstream()) {
-		int sbod = 0;
-		/* checking all all downstream routes for
-		 * explicit of implict solo is a rather drastic measure,
-		 * ideally the input_change_handler() of the other route
-		 * would propagate the change to us.
+	if ((change.type & IOChange::ConnectionsChanged)) {
+
+		/* do this ONLY if connections have changed. Configuration
+		 * changes do not, by themselves alter solo upstream or
+		 * downstream status.
 		 */
-		boost::shared_ptr<RouteList> routes = _session.get_routes ();
-		if (_output->connected()) {
-			for (RouteList::iterator i = routes->begin(); i != routes->end(); ++i) {
-				if ((*i).get() == this || (*i)->is_master() || (*i)->is_monitor() || (*i)->is_auditioner()) {
-					continue;
-				}
-				bool sends_only;
-				bool does_feed = direct_feeds_according_to_reality (*i, &sends_only);
-				if (does_feed && !sends_only) {
-					if ((*i)->soloed()) {
-						++sbod;
-						break;
+
+		if (_solo_control->soloed_by_others_downstream()) {
+			int sbod = 0;
+			/* checking all all downstream routes for
+			 * explicit of implict solo is a rather drastic measure,
+			 * ideally the input_change_handler() of the other route
+			 * would propagate the change to us.
+			 */
+			boost::shared_ptr<RouteList> routes = _session.get_routes ();
+			if (_output->connected()) {
+				for (RouteList::iterator i = routes->begin(); i != routes->end(); ++i) {
+					if ((*i).get() == this || (*i)->is_master() || (*i)->is_monitor() || (*i)->is_auditioner()) {
+						continue;
+					}
+					bool sends_only;
+					bool does_feed = direct_feeds_according_to_reality (*i, &sends_only);
+					if (does_feed && !sends_only) {
+						if ((*i)->soloed()) {
+							++sbod;
+							break;
+						}
 					}
 				}
 			}
-		}
-		int delta = sbod - _solo_control->soloed_by_others_downstream();
-		if (delta <= 0) {
-			// do not allow new connections to change implicit solo (no propagation)
-			_solo_control->mod_solo_by_others_downstream (delta);
-			// Session::route_solo_changed() does not propagate indirect solo-changes
-			// propagate upstream to tracks
-			for (RouteList::iterator i = routes->begin(); i != routes->end(); ++i) {
-				if ((*i).get() == this || !can_solo()) {
-					continue;
-				}
-				bool sends_only;
-				bool does_feed = (*i)->feeds (shared_from_this(), &sends_only);
-				if (delta != 0 && does_feed && !sends_only) {
-					(*i)->solo_control()->mod_solo_by_others_downstream (delta);
-				}
-			}
 
+			int delta = sbod - _solo_control->soloed_by_others_downstream();
+			if (delta <= 0) {
+				// do not allow new connections to change implicit solo (no propagation)
+				_solo_control->mod_solo_by_others_downstream (delta);
+				// Session::route_solo_changed() does not propagate indirect solo-changes
+				// propagate upstream to tracks
+				boost::shared_ptr<Route> shared_this = shared_from_this();
+				for (RouteList::iterator i = routes->begin(); i != routes->end(); ++i) {
+					if ((*i).get() == this || !can_solo()) {
+						continue;
+					}
+					bool sends_only;
+					bool does_feed = (*i)->feeds (shared_this, &sends_only);
+					if (delta != 0 && does_feed && !sends_only) {
+						(*i)->solo_control()->mod_solo_by_others_downstream (delta);
+					}
+				}
+
+			}
 		}
 	}
 }
@@ -3955,6 +4045,10 @@ Route::save_as_template (const string& path, const string& name)
 bool
 Route::set_name (const string& str)
 {
+	if (str.empty ()) {
+		return false;
+	}
+
 	if (str == name()) {
 		return true;
 	}
@@ -4877,7 +4971,15 @@ uint32_t
 Route::eq_band_cnt () const
 {
 	if (Profile->get_mixbus()) {
+#ifdef MIXBUS32C
+		if (is_master() || mixbus()) {
+			return 3;
+		} else {
+			return 4;
+		}
+#else
 		return 3;
+#endif
 	} else {
 		/* Ardour has no well-known EQ object */
 		return 0;
@@ -4895,30 +4997,33 @@ Route::eq_gain_controllable (uint32_t band) const
 	}
 
 	uint32_t port_number;
-	switch (band) {
-	case 0:
-		if (is_master() || mixbus()) {
-			port_number = 4;
-		} else {
-			port_number = 8;
+	if (is_master() || mixbus()) {
+		switch (band) {
+			case 0: port_number = 4; break;
+			case 1: port_number = 3; break;
+			case 2: port_number = 2; break;
+			default:
+				return boost::shared_ptr<AutomationControl>();
 		}
-		break;
-	case 1:
-		if (is_master() || mixbus()) {
-			port_number = 3;
-		} else {
-			port_number = 6;
+	} else {
+#ifdef MIXBUS32C
+		switch (band) {
+			case 0: port_number = 14; break;
+			case 1: port_number = 12; break;
+			case 2: port_number = 10; break;
+			case 3: port_number =  8; break;
+			default:
+				return boost::shared_ptr<AutomationControl>();
 		}
-		break;
-	case 2:
-		if (is_master() || mixbus()) {
-			port_number = 2;
-		} else {
-			port_number = 4;
+#else
+		switch (band) {
+			case 0: port_number = 8; break;
+			case 1: port_number = 6; break;
+			case 2: port_number = 4; break;
+			default:
+				return boost::shared_ptr<AutomationControl>();
 		}
-		break;
-	default:
-		return boost::shared_ptr<AutomationControl>();
+#endif
 	}
 
 	return boost::dynamic_pointer_cast<ARDOUR::AutomationControl> (eq->control (Evoral::Parameter (ARDOUR::PluginAutomation, 0, port_number)));
@@ -4930,7 +5035,6 @@ boost::shared_ptr<AutomationControl>
 Route::eq_freq_controllable (uint32_t band) const
 {
 #ifdef MIXBUS
-
 	if (mixbus() || is_master()) {
 		/* no frequency controls for mixbusses or master */
 		return boost::shared_ptr<AutomationControl>();
@@ -4943,19 +5047,24 @@ Route::eq_freq_controllable (uint32_t band) const
 	}
 
 	uint32_t port_number;
+#ifdef MIXBUS32C
 	switch (band) {
-	case 0:
-		port_number = 7;
-		break;
-	case 1:
-		port_number = 5;
-		break;
-	case 2:
-		port_number = 3;
-		break;
-	default:
-		return boost::shared_ptr<AutomationControl>();
+		case 0: port_number = 13; break;
+		case 1: port_number = 11; break;
+		case 2: port_number = 9; break;
+		case 3: port_number = 7; break;
+		default:
+			return boost::shared_ptr<AutomationControl>();
 	}
+#else
+	switch (band) {
+		case 0: port_number = 7; break;
+		case 1: port_number = 5; break;
+		case 2: port_number = 3; break;
+		default:
+			return boost::shared_ptr<AutomationControl>();
+	}
+#endif
 
 	return boost::dynamic_pointer_cast<ARDOUR::AutomationControl> (eq->control (Evoral::Parameter (ARDOUR::PluginAutomation, 0, port_number)));
 #else
@@ -4997,11 +5106,15 @@ Route::eq_hpf_controllable () const
 #ifdef MIXBUS
 	boost::shared_ptr<PluginInsert> eq = ch_eq();
 
-	if (!eq) {
+	if (is_master() || mixbus() || !eq) {
 		return boost::shared_ptr<AutomationControl>();
 	}
-
+#ifdef MIXBUS32C
+	return boost::dynamic_pointer_cast<ARDOUR::AutomationControl> (eq->control (Evoral::Parameter (ARDOUR::PluginAutomation, 0, 3)));
+#else
 	return boost::dynamic_pointer_cast<ARDOUR::AutomationControl> (eq->control (Evoral::Parameter (ARDOUR::PluginAutomation, 0, 2)));
+#endif
+
 #else
 	return boost::shared_ptr<AutomationControl>();
 #endif
@@ -5010,20 +5123,30 @@ Route::eq_hpf_controllable () const
 string
 Route::eq_band_name (uint32_t band) const
 {
+#ifdef MIXBUS32C
+	if (is_master() || mixbus()) {
+#endif
 	if (Profile->get_mixbus()) {
 		switch (band) {
-		case 0:
-			return _("lo");
-		case 1:
-			return _("mid");
-		case 2:
-			return _("hi");
-		default:
-			return string();
+			case 0: return _("lo");
+			case 1: return _("mid");
+			case 2: return _("hi");
+			default: return string();
 		}
 	} else {
 		return string ();
 	}
+#ifdef MIXBUS32C
+	} else {
+		switch (band) {
+			case 0: return _("lo");
+			case 1: return _("lo mid");
+			case 2: return _("hi mid");
+			case 3: return _("hi");
+			default: return string();
+		}
+	}
+#endif
 }
 
 boost::shared_ptr<AutomationControl>
@@ -5102,19 +5225,23 @@ Route::comp_makeup_controllable () const
 	return boost::shared_ptr<AutomationControl>();
 #endif
 }
-boost::shared_ptr<AutomationControl>
+boost::shared_ptr<ReadOnlyControl>
 Route::comp_redux_controllable () const
 {
 #ifdef MIXBUS
 	boost::shared_ptr<PluginInsert> comp = ch_comp();
 
 	if (!comp) {
-		return boost::shared_ptr<AutomationControl>();
+		return boost::shared_ptr<ReadOnlyControl>();
+	}
+	if (is_master()) {
+		return comp->control_output (2);
+	} else {
+		return comp->control_output (6);
 	}
 
-	return boost::dynamic_pointer_cast<ARDOUR::AutomationControl> (comp->control (Evoral::Parameter (ARDOUR::PluginAutomation, 0, 6)));
 #else
-	return boost::shared_ptr<AutomationControl>();
+	return boost::shared_ptr<ReadOnlyControl>();
 #endif
 }
 

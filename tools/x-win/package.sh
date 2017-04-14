@@ -27,7 +27,7 @@ PROGRAM_NAME=Ardour
 PROGRAM_KEY=Ardour
 PROGRAM_VERSION=${major_version}
 
-PRODUCT_NAME=ardour
+PRODUCT_NAME=Ardour
 PRODUCT_VERSION=${major_version}
 
 WITH_HARRISON_LV2=1 ;
@@ -43,16 +43,18 @@ while [ $# -gt 0 ] ; do
 			WITH_X42_LV2=1 ;
 			PROGRAM_NAME=Mixbus
 			PROGRAM_KEY=Mixbus
-			PRODUCT_NAME=mixbus
+			PRODUCT_NAME=Mixbus
+			MANUAL_NAME="mixbus${major_version}-live-manual"
 			shift ;;
 		--mixbus32c)
 			MIXBUS=1
 			WITH_HARRISON_LV2=1 ;
 			WITH_X42_LV2=1 ;
-			PRODUCT_NAME=mixbus32c
+			PRODUCT_NAME=Mixbus32C
 			PROGRAM_KEY=Mixbus32C
 			PROGRAM_NAME=Mixbus32C-${PROGRAM_VERSION}
 			PROGRAM_VERSION=""
+			MANUAL_NAME="mixbus32c-${major_version}-live-manual"
 			shift ;;
 		--chanstrip) HARRISONCHANNELSTRIP=$2 ; shift; shift ;;
 	esac
@@ -188,7 +190,7 @@ cp -r $PREFIX/etc/${LOWERCASE_DIRNAME}/* $DESTDIR/share/${LOWERCASE_DIRNAME}/
 
 cp COPYING $DESTDIR/share/
 cp gtk2_ardour/icons/${PRODUCT_ICON} $DESTDIR/share/
-cp gtk2_ardour/icons/ardour_bug.ico $DESTDIR/share/
+cp gtk2_ardour/icons/ArdourBug.ico $DESTDIR/share/
 
 # replace default cursor with square version (sans hotspot file)
 cp gtk2_ardour/icons/cursor_square/* $DESTDIR/share/${LOWERCASE_DIRNAME}/icons/
@@ -248,12 +250,26 @@ fi
 
 ################################################################################
 ### Mixbus plugins, etc
+if true ; then
+	mkdir -p $ALIBDIR/LV2
+
+	echo "Adding General MIDI Synth LV2"
+
+	for proj in x42-gmsynth; do
+		X42_VERSION=$(curl -s -S http://x42-plugins.com/x42/win/${proj}.latest.txt)
+		rsync -a -q --partial \
+			rsync://x42-plugins.com/x42/win/${proj}-lv2-${WARCH}-${X42_VERSION}.zip \
+			"${SRCCACHE}/${proj}-lv2-${WARCH}-${X42_VERSION}.zip"
+		unzip -q -d "$ALIBDIR/LV2/" "${SRCCACHE}/${proj}-lv2-${WARCH}-${X42_VERSION}.zip"
+	done
+fi
+
 if test x$WITH_X42_LV2 != x ; then
 	mkdir -p $ALIBDIR/LV2
 
 	echo "Adding x42 Plugins"
 
-	for proj in x42-meters x42-midifilter x42-midimap x42-stereoroute x42-eq setBfree; do
+	for proj in x42-meters x42-midifilter x42-midimap x42-stereoroute x42-eq setBfree x42-avldrums; do
 		X42_VERSION=$(curl -s -S http://x42-plugins.com/x42/win/${proj}.latest.txt)
 		rsync -a -q --partial \
 			rsync://x42-plugins.com/x42/win/${proj}-lv2-${WARCH}-${X42_VERSION}.zip \
@@ -357,7 +373,7 @@ if test -n "$MIXBUS"; then
 !define MUI_FINISHPAGE_TITLE "Welcome to Harrison Mixbus"
 !define MUI_FINISHPAGE_TEXT "Thanks for your purchase of Mixbus!\$\\r\$\\nYou will find the Mixbus application in the Start Menu (or the All Apps panel for Windows 8) \$\\r\$\\nClick the link below to view the Mixbus manual, and learn ways to get involved with the Mixbus community."
 !define MUI_FINISHPAGE_LINK "Mixbus Manual"
-!define MUI_FINISHPAGE_LINK_LOCATION "http://harrisonconsoles.com/site/${PRODUCT_NAME}-info.html"
+!define MUI_FINISHPAGE_LINK_LOCATION "http://www.harrisonconsoles.com/mixbus/${MANUAL_NAME}/"
 !define MUI_FINISHPAGE_NOREBOOTSUPPORT
 EOF
 
@@ -429,7 +445,7 @@ EOF
 
 if test -f "$DESTDIR/debug.bat"; then
 	cat >> $NSISFILE << EOF
-  CreateShortCut "\$SMPROGRAMS\\${PRODUCT_ID}${SFX}\\${PROGRAM_NAME}${PROGRAM_VERSION} GDB.lnk" "\$INSTDIR\\debug.bat" "" "\$INSTDIR\\share\\ardour_bug.ico" 0
+  CreateShortCut "\$SMPROGRAMS\\${PRODUCT_ID}${SFX}\\${PROGRAM_NAME}${PROGRAM_VERSION} GDB.lnk" "\$INSTDIR\\debug.bat" "" "\$INSTDIR\\share\\ArdourBug.ico" 0
 EOF
 fi
 

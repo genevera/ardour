@@ -73,6 +73,7 @@ Editor::initialize_canvas ()
 	_track_canvas = _track_canvas_viewport->canvas ();
 
 	_track_canvas->set_background_color (UIConfiguration::instance().color ("arrange base"));
+	_track_canvas->use_nsglview ();
 
 	/* scroll group for items that should not automatically scroll
 	 *  (e.g verbose cursor). It shares the canvas coordinate space.
@@ -173,7 +174,7 @@ Editor::initialize_canvas ()
 
 	cd_marker_bar = new ArdourCanvas::Rectangle (cd_marker_group, ArdourCanvas::Rect (0.0, 0.0, ArdourCanvas::COORD_MAX, timebar_height));
 	CANVAS_DEBUG_NAME (cd_marker_bar, "CD Marker Bar");
- 	cd_marker_bar->set_outline_what (ArdourCanvas::Rectangle::BOTTOM);
+	cd_marker_bar->set_outline_what (ArdourCanvas::Rectangle::BOTTOM);
 
 	ARDOUR_UI::instance()->video_timeline = new VideoTimeLine(this, videotl_group, (timebar_height * videotl_bar_height));
 
@@ -414,7 +415,7 @@ Editor::drop_paths_part_two (const vector<string>& paths, framepos_t frame, doub
 		do_import (midi_paths, Editing::ImportDistinctFiles, ImportAsTrack, SrcBest, SMFTrackName, SMFTempoIgnore, frame, is.selected_instrument());
 
 		if (UIConfiguration::instance().get_only_copy_imported_files() || copy) {
-			do_import (audio_paths, Editing::ImportDistinctFiles, Editing::ImportAsTrack, 
+			do_import (audio_paths, Editing::ImportDistinctFiles, Editing::ImportAsTrack,
 			           SrcBest, SMFTrackName, SMFTempoIgnore, frame);
 		} else {
 			do_embed (audio_paths, Editing::ImportDistinctFiles, ImportAsTrack, frame);
@@ -449,7 +450,6 @@ Editor::drop_paths (const RefPtr<Gdk::DragContext>& context,
 {
 	vector<string> paths;
 	GdkEvent ev;
-	framepos_t frame;
 	double cy;
 
 	if (convert_drop_to_paths (paths, context, x, y, data, info, time) == 0) {
@@ -461,9 +461,8 @@ Editor::drop_paths (const RefPtr<Gdk::DragContext>& context,
 		ev.button.x = x;
 		ev.button.y = y;
 
-		frame = window_event_sample (&ev, 0, &cy);
-
-		snap_to (frame);
+		MusicFrame when (window_event_sample (&ev, 0, &cy), 0);
+		snap_to (when);
 
 		bool copy = ((context->get_actions() & (Gdk::ACTION_COPY | Gdk::ACTION_LINK | Gdk::ACTION_MOVE)) == Gdk::ACTION_COPY);
 #ifdef __APPLE__
@@ -471,9 +470,9 @@ Editor::drop_paths (const RefPtr<Gdk::DragContext>& context,
 		   the main event loop with GTK/Quartz. Since import/embed wants
 		   to push up a progress dialog, defer all this till we go idle.
 		*/
-		Glib::signal_idle().connect (sigc::bind (sigc::mem_fun (*this, &Editor::idle_drop_paths), paths, frame, cy, copy));
+		Glib::signal_idle().connect (sigc::bind (sigc::mem_fun (*this, &Editor::idle_drop_paths), paths, when.frame, cy, copy));
 #else
-		drop_paths_part_two (paths, frame, cy, copy);
+		drop_paths_part_two (paths, when.frame, cy, copy);
 #endif
 	}
 
@@ -514,6 +513,16 @@ Editor::maybe_autoscroll (bool allow_horiz, bool allow_vert, bool from_headers)
 
 	if (from_headers) {
 		alloc = controls_layout.get_allocation ();
+
+		int wx, wy;
+
+		controls_layout.get_parent()->translate_coordinates (*toplevel,
+		                                                     alloc.get_x(), alloc.get_y(),
+		                                                     wx, wy);
+
+		scrolling_boundary = ArdourCanvas::Rect (wx, wy, wx + alloc.get_width(), wy + alloc.get_height());
+
+
 	} else {
 		alloc = _track_canvas_viewport->get_allocation ();
 
@@ -544,9 +553,14 @@ Editor::maybe_autoscroll (bool allow_horiz, bool allow_vert, bool from_headers)
 			alloc.set_x (alloc.get_x() + 10);
 		}
 
-	}
+		int wx, wy;
 
-	scrolling_boundary = ArdourCanvas::Rect (alloc.get_x(), alloc.get_y(), alloc.get_x() + alloc.get_width(), alloc.get_y() + alloc.get_height());
+		_track_canvas_viewport->get_parent()->translate_coordinates (*toplevel,
+		                                                             alloc.get_x(), alloc.get_y(),
+		                                                             wx, wy);
+
+		scrolling_boundary = ArdourCanvas::Rect (wx, wy, wx + alloc.get_width(), wy + alloc.get_height());
+	}
 
 	int x, y;
 	Gdk::ModifierType mask;
@@ -795,22 +809,46 @@ Editor::get_enter_context(ItemType type)
 }
 
 bool
-Editor::left_track_canvas (GdkEventCrossing */*ev*/)
+Editor::left_track_canvas (GdkEventCrossing* ev)
 {
+	const bool was_within = within_track_canvas;
 	DropDownKeys ();
 	within_track_canvas = false;
 	set_entered_track (0);
 	set_entered_regionview (0);
 	reset_canvas_action_sensitivity (false);
+
+	if (was_within) {
+		if (ev->detail == GDK_NOTIFY_NONLINEAR ||
+		    ev->detail == GDK_NOTIFY_NONLINEAR_VIRTUAL) {
+			/* context menu or something similar */
+			sensitize_the_right_region_actions (false);
+		} else {
+			sensitize_the_right_region_actions (true);
+		}
+	}
+
 	return false;
 }
 
 bool
-Editor::entered_track_canvas (GdkEventCrossing */*ev*/)
+Editor::entered_track_canvas (GdkEventCrossing* ev)
 {
+	const bool was_within = within_track_canvas;
 	within_track_canvas = true;
 	reset_canvas_action_sensitivity (true);
-	return FALSE;
+
+	if (!was_within) {
+		if (ev->detail == GDK_NOTIFY_NONLINEAR ||
+		    ev->detail == GDK_NOTIFY_NONLINEAR_VIRTUAL) {
+			/* context menu or something similar */
+			sensitize_the_right_region_actions (false);
+		} else {
+			sensitize_the_right_region_actions (true);
+		}
+	}
+
+	return false;
 }
 
 void

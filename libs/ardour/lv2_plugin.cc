@@ -1434,6 +1434,7 @@ set_port_value(const char* port_symbol,
 	const uint32_t port_index = self->port_index(port_symbol);
 	if (port_index != (uint32_t)-1) {
 		self->set_parameter(port_index, *(const float*)value);
+		self->PresetPortSetValue (port_index, *(const float*)value); /* EMIT SIGNAL */
 	}
 }
 
@@ -1647,7 +1648,8 @@ LV2Plugin::write_from_ui(uint32_t       index,
 		if (_atom_ev_buffers && _atom_ev_buffers[0]) {
 			bufsiz =  lv2_evbuf_get_capacity(_atom_ev_buffers[0]);
 		}
-		rbs = max((size_t) bufsiz * 8, rbs);
+		int fact = ceilf(_session.frame_rate () / 3000.f);
+		rbs = max((size_t) bufsiz * std::max (8, fact), rbs);
 		_from_ui = new RingBuffer<uint8_t>(rbs);
 	}
 
@@ -3354,10 +3356,7 @@ LV2PluginInfo::in_category (const std::string &c) const
 {
 	// TODO use untranslated lilv_plugin_get_class()
 	// match gtk2_ardour/plugin_selector.cc
-	if (category == c) {
-		return true;
-	}
-	return false;
+	return category == c;
 }
 
 bool

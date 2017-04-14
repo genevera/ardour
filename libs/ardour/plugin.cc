@@ -97,12 +97,12 @@ Plugin::Plugin (AudioEngine& e, Session& s)
 	: _engine (e)
 	, _session (s)
 	, _cycles (0)
+	, _owner (0)
 	, _have_presets (false)
 	, _have_pending_stop_events (false)
 	, _parameter_changed_since_last_preset (false)
 {
 	_pending_stop_events.ensure_buffers (DataType::MIDI, 1, 4096);
-	PresetsChanged.connect_same_thread (_preset_connection, boost::bind (&Plugin::update_presets, this, _1 ,_2));
 }
 
 Plugin::Plugin (const Plugin& other)
@@ -112,12 +112,12 @@ Plugin::Plugin (const Plugin& other)
 	, _session (other._session)
 	, _info (other._info)
 	, _cycles (0)
+	, _owner (other._owner)
 	, _have_presets (false)
 	, _have_pending_stop_events (false)
 	, _parameter_changed_since_last_preset (false)
 {
 	_pending_stop_events.ensure_buffers (DataType::MIDI, 1, 4096);
-	PresetsChanged.connect_same_thread (_preset_connection, boost::bind (&Plugin::update_presets, this, _1 ,_2));
 }
 
 Plugin::~Plugin ()
@@ -128,18 +128,23 @@ void
 Plugin::remove_preset (string name)
 {
 	Plugin::PresetRecord const * p = preset_by_label (name);
+	if (!p) {
+		PBD::error << _("Trying to remove nonexistent preset.") << endmsg;
+		return;
+	}
 	if (!p->user) {
 		PBD::error << _("Cannot remove plugin factory preset.") << endmsg;
 		return;
 	}
 
 	do_remove_preset (name);
-	_presets.erase (preset_by_label (name)->uri);
+	_presets.erase (p->uri);
 
 	_last_preset.uri = "";
 	_parameter_changed_since_last_preset = false;
-	PresetRemoved (); /* EMIT SIGNAL */
+	_have_presets = false;
 	PresetsChanged (unique_id(), this); /* EMIT SIGNAL */
+	PresetRemoved (); /* EMIT SIGNAL */
 }
 
 /** @return PresetRecord with empty URI on failure */
@@ -155,8 +160,9 @@ Plugin::save_preset (string name)
 
 	if (!uri.empty()) {
 		_presets.insert (make_pair (uri, PresetRecord (uri, name)));
-		PresetAdded (); /* EMIT SIGNAL */
+		_have_presets = false;
 		PresetsChanged (unique_id(), this); /* EMIT SIGNAL */
+		PresetAdded (); /* EMIT SIGNAL */
 	}
 
 	return PresetRecord (uri, name);
@@ -393,18 +399,6 @@ Plugin::resolve_midi ()
 	_have_pending_stop_events = true;
 }
 
-void
-Plugin::update_presets (std::string src_unique_id, Plugin* src )
-{
-	if (src == this || unique_id() != src_unique_id) {
-		return;
-	}
-	_have_presets = false;
-	// TODO check if a preset was added/removed and emit the proper signal
-	// so far no subscriber distinguishes between PresetAdded and PresetRemoved
-	PresetAdded();
-}
-
 vector<Plugin::PresetRecord>
 Plugin::get_presets ()
 {
@@ -458,7 +452,6 @@ void
 Plugin::set_parameter (uint32_t /* which */, float /* value */)
 {
 	_parameter_changed_since_last_preset = true;
-	_session.set_dirty ();
 	PresetDirty (); /* EMIT SIGNAL */
 }
 

@@ -646,7 +646,7 @@ Editor::mouse_add_new_marker (framepos_t where, bool is_cd)
 		if (!choose_new_marker_name(markername)) {
 			return;
 		}
-		Location *location = new Location (*_session, where, where, markername, (Location::Flags) flags);
+		Location *location = new Location (*_session, where, where, markername, (Location::Flags) flags, get_grid_music_divisions (0));
 		begin_reversible_command (_("add marker"));
 
 		XMLNode &before = _session->locations()->get_state();
@@ -838,9 +838,8 @@ Editor::marker_context_menu (GdkEventButton* ev, ArdourCanvas::Item* item)
 
 	if (loc == transport_loop_location() || loc == transport_punch_location() || loc->is_session_range ()) {
 
-		if (transport_marker_menu == 0) {
-			build_range_marker_menu (loc == transport_loop_location() || loc == transport_punch_location(), loc->is_session_range());
-		}
+		delete transport_marker_menu;
+		build_range_marker_menu (loc, loc == transport_loop_location() || loc == transport_punch_location(), loc->is_session_range());
 
 		marker_menu_item = item;
 		transport_marker_menu->popup (1, ev->time);
@@ -868,9 +867,9 @@ Editor::marker_context_menu (GdkEventButton* ev, ArdourCanvas::Item* item)
 			marker_menu->popup (1, ev->time);
 
 	} else if (loc->is_range_marker()) {
-		if (range_marker_menu == 0) {
-			build_range_marker_menu (false, false);
-		}
+		delete range_marker_menu;
+		build_range_marker_menu (loc, false, false);
+
 		marker_menu_item = item;
 		range_marker_menu->popup (1, ev->time);
 	}
@@ -893,6 +892,7 @@ Editor::build_marker_menu (Location* loc)
 	using namespace Menu_Helpers;
 
 	marker_menu = new Menu;
+
 	MenuList& items = marker_menu->items();
 	marker_menu->set_name ("ArdourContextMenu");
 
@@ -916,9 +916,8 @@ Editor::build_marker_menu (Location* loc)
 
 	items.push_back (CheckMenuElem (_("Glue to Bars and Beats")));
 	Gtk::CheckMenuItem* glue_item = static_cast<Gtk::CheckMenuItem*> (&items.back());
-	if (loc->position_lock_style() == MusicTime) {
-		glue_item->set_active ();
-	}
+	glue_item->set_active (loc->position_lock_style() == MusicTime);
+
 	glue_item->signal_activate().connect (sigc::mem_fun (*this, &Editor::toggle_marker_menu_glue));
 
 	items.push_back (SeparatorElem());
@@ -927,13 +926,14 @@ Editor::build_marker_menu (Location* loc)
 }
 
 void
-Editor::build_range_marker_menu (bool loop_or_punch, bool session)
+Editor::build_range_marker_menu (Location* loc, bool loop_or_punch, bool session)
 {
 	using namespace Menu_Helpers;
 
-	bool const loop_or_punch_or_session = loop_or_punch | session;
+	bool const loop_or_punch_or_session = loop_or_punch || session;
 
-	Menu *markerMenu = new Menu;
+	Menu* markerMenu = new Menu;
+
 	if (loop_or_punch_or_session) {
 		transport_marker_menu = markerMenu;
 	} else {
@@ -951,6 +951,13 @@ Editor::build_range_marker_menu (bool loop_or_punch, bool session)
 	items.push_back (MenuElem (_("Set Range from Selection"), sigc::bind (sigc::mem_fun(*this, &Editor::marker_menu_set_from_selection), false)));
 
 	items.push_back (MenuElem (_("Zoom to Range"), sigc::mem_fun (*this, &Editor::marker_menu_zoom_to_range)));
+
+	items.push_back (SeparatorElem());
+	items.push_back (CheckMenuElem (_("Glue to Bars and Beats")));
+
+	Gtk::CheckMenuItem* glue_item = static_cast<Gtk::CheckMenuItem*> (&items.back());
+	glue_item->set_active (loc->position_lock_style() == MusicTime);
+	glue_item->signal_activate().connect (sigc::mem_fun (*this, &Editor::toggle_marker_menu_glue));
 
 	items.push_back (SeparatorElem());
 	items.push_back (MenuElem (_("Export Range..."), sigc::mem_fun(*this, &Editor::export_range)));
@@ -980,13 +987,30 @@ Editor::build_tempo_marker_menu (TempoMarker* loc, bool can_remove)
 	using namespace Menu_Helpers;
 
 	tempo_marker_menu = new Menu;
+
 	MenuList& items = tempo_marker_menu->items();
 	tempo_marker_menu->set_name ("ArdourContextMenu");
 
-	if (loc->tempo().type() == TempoSection::Constant) {
-		items.push_back (MenuElem (_("Make Ramped"), sigc::mem_fun(*this, &Editor::toggle_tempo_type)));
-	} else {
-		items.push_back (MenuElem (_("Make Constant"), sigc::mem_fun(*this, &Editor::toggle_tempo_type)));
+	if (!loc->tempo().initial()) {
+		if (loc->tempo().clamped()) {
+			items.push_back (MenuElem (_("Unlock Continue"), sigc::mem_fun(*this, &Editor::toggle_tempo_clamped)));
+		} else {
+			items.push_back (MenuElem (_("Lock Continue"), sigc::mem_fun(*this, &Editor::toggle_tempo_clamped)));
+		}
+
+		TempoSection* prev_ts = _session->tempo_map().previous_tempo_section (&loc->tempo());
+		if (prev_ts && prev_ts->end_note_types_per_minute() != loc->tempo().note_types_per_minute()) {
+			items.push_back (MenuElem (_("Continue"), sigc::mem_fun(*this, &Editor::continue_previous_tempo)));
+		}
+	}
+
+	TempoSection* next_ts = _session->tempo_map().next_tempo_section (&loc->tempo());
+	if (next_ts && next_ts->note_types_per_minute() != loc->tempo().end_note_types_per_minute()) {
+		items.push_back (MenuElem (_("Ramp to Next"), sigc::mem_fun(*this, &Editor::ramp_to_next_tempo)));
+	}
+
+	if (loc->tempo().type() == TempoSection::Ramp) {
+		items.push_back (MenuElem (_("Set Constant"), sigc::mem_fun(*this, &Editor::toggle_tempo_type)));
 	}
 
 	if (loc->tempo().position_lock_style() == AudioTime && can_remove) {
@@ -1006,6 +1030,7 @@ Editor::build_meter_marker_menu (MeterMarker* loc, bool can_remove)
 	using namespace Menu_Helpers;
 
 	meter_marker_menu = new Menu;
+
 	MenuList& items = meter_marker_menu->items();
 	meter_marker_menu->set_name ("ArdourContextMenu");
 
@@ -1027,6 +1052,7 @@ Editor::build_new_transport_marker_menu ()
 	using namespace Menu_Helpers;
 
 	new_transport_marker_menu = new Menu;
+
 	MenuList& items = new_transport_marker_menu->items();
 	new_transport_marker_menu->set_name ("ArdourContextMenu");
 
@@ -1213,17 +1239,18 @@ Editor::marker_menu_set_from_playhead ()
 
 	Location* l;
 	bool is_start;
+	const int32_t divisions = get_grid_music_divisions (0);
 
 	if ((l = find_location_from_marker (marker, is_start)) != 0) {
 
 		if (l->is_mark()) {
-			l->set_start (_session->audible_frame ());
+			l->set_start (_session->audible_frame (), false, true, divisions);
 		}
 		else {
 			if (is_start) {
-				l->set_start (_session->audible_frame ());
+				l->set_start (_session->audible_frame (), false, true, divisions);
 			} else {
-				l->set_end (_session->audible_frame ());
+				l->set_end (_session->audible_frame (), false, true, divisions);
 			}
 		}
 	}
@@ -1404,23 +1431,22 @@ Editor::toggle_marker_lock_style ()
 	} else if (tm) {
 		TempoSection* tsp = &tm->tempo();
 
-		const Tempo tempo (tsp->note_types_per_minute(), tsp->note_type());
 		const double pulse = tsp->pulse();
 		const framepos_t frame = tsp->frame();
-		const TempoSection::Type type = tsp->type();
 		const PositionLockStyle pls = (tsp->position_lock_style() == AudioTime) ? MusicTime : AudioTime;
+		const Tempo tempo (tsp->note_types_per_minute(), tsp->note_type(), tsp->end_note_types_per_minute());
 
 		begin_reversible_command (_("change tempo lock style"));
 		XMLNode &before = _session->tempo_map().get_state();
 
-		_session->tempo_map().replace_tempo (*tsp, tempo, pulse, frame, type, pls);
+		_session->tempo_map().replace_tempo (*tsp, tempo, pulse, frame, pls);
 
 		XMLNode &after = _session->tempo_map().get_state();
 		_session->add_command(new MementoCommand<TempoMap>(_session->tempo_map(), &before, &after));
 		commit_reversible_command ();
 	}
 }
-
+/* actally just resets the ts to constant using initial tempo */
 void
 Editor::toggle_tempo_type ()
 {
@@ -1434,17 +1460,102 @@ Editor::toggle_tempo_type ()
 		const Tempo tempo (tsp->note_types_per_minute(), tsp->note_type());
 		const double pulse = tsp->pulse();
 		const framepos_t frame = tsp->frame();
-		const TempoSection::Type type = (tsp->type() == TempoSection::Ramp) ? TempoSection::Constant : TempoSection::Ramp;
 		const PositionLockStyle pls = tsp->position_lock_style();
 
-		begin_reversible_command (_("change tempo type"));
+		begin_reversible_command (_("set tempo to constant"));
 		XMLNode &before = _session->tempo_map().get_state();
 
-		_session->tempo_map().replace_tempo (*tsp, tempo, pulse, frame, type, pls);
+		_session->tempo_map().replace_tempo (*tsp, tempo, pulse, frame, pls);
 
 		XMLNode &after = _session->tempo_map().get_state();
 		_session->add_command(new MementoCommand<TempoMap>(_session->tempo_map(), &before, &after));
 		commit_reversible_command ();
+	}
+}
+/* clamped locks the previous section end tempo to the start tempo */
+void
+Editor::toggle_tempo_clamped ()
+{
+	TempoMarker* tm;
+	MeterMarker* mm;
+	dynamic_cast_marker_object (marker_menu_item->get_data ("marker"), &mm, &tm);
+
+	if (tm) {
+		begin_reversible_command (_("Clamp Tempo"));
+		XMLNode &before = _session->tempo_map().get_state();
+
+		TempoSection* tsp = &tm->tempo();
+		TempoSection* prev = _session->tempo_map().previous_tempo_section (tsp);
+
+		if (prev) {
+			/* set to the end tempo of the previous section */
+			Tempo new_tempo (prev->end_note_types_per_minute(), prev->note_type(), tsp->end_note_types_per_minute());
+			_session->tempo_map().gui_change_tempo (tsp, new_tempo);
+		}
+
+		tsp->set_clamped (!tsp->clamped());
+
+		XMLNode &after = _session->tempo_map().get_state();
+		_session->add_command(new MementoCommand<TempoMap>(_session->tempo_map(), &before, &after));
+		commit_reversible_command ();
+	}
+}
+
+void
+Editor::continue_previous_tempo ()
+{
+	TempoMarker* tm;
+	MeterMarker* mm;
+	dynamic_cast_marker_object (marker_menu_item->get_data ("marker"), &mm, &tm);
+
+	if (tm) {
+		TempoMap& tmap (_session->tempo_map());
+		TempoSection* tsp = &tm->tempo();
+		TempoSection* prev_ts = tmap.previous_tempo_section (&tm->tempo());
+		if (prev_ts) {
+			const Tempo tempo (prev_ts->end_note_types_per_minute(), tsp->note_type(), tsp->end_note_types_per_minute());
+			const double pulse = tsp->pulse();
+			const framepos_t frame = tsp->frame();
+			const PositionLockStyle pls = tsp->position_lock_style();
+
+			begin_reversible_command (_("continue previous tempo"));
+			XMLNode &before = _session->tempo_map().get_state();
+
+			tmap.replace_tempo (*tsp, tempo, pulse, frame, pls);
+
+			XMLNode &after = _session->tempo_map().get_state();
+			_session->add_command(new MementoCommand<TempoMap>(_session->tempo_map(), &before, &after));
+			commit_reversible_command ();
+		}
+	}
+}
+
+void
+Editor::ramp_to_next_tempo ()
+{
+	TempoMarker* tm;
+	MeterMarker* mm;
+	dynamic_cast_marker_object (marker_menu_item->get_data ("marker"), &mm, &tm);
+
+	if (tm) {
+		TempoMap& tmap (_session->tempo_map());
+		TempoSection* tsp = &tm->tempo();
+		TempoSection* next_ts = tmap.next_tempo_section (&tm->tempo());
+		if (next_ts) {
+			const Tempo tempo (tsp->note_types_per_minute(), tsp->note_type(), next_ts->note_types_per_minute());
+			const double pulse = tsp->pulse();
+			const framepos_t frame = tsp->frame();
+			const PositionLockStyle pls = tsp->position_lock_style();
+
+			begin_reversible_command (_("ramp to next tempo"));
+			XMLNode &before = _session->tempo_map().get_state();
+
+			tmap.replace_tempo (*tsp, tempo, pulse, frame, pls);
+
+			XMLNode &after = _session->tempo_map().get_state();
+			_session->add_command(new MementoCommand<TempoMap>(_session->tempo_map(), &before, &after));
+			commit_reversible_command ();
+		}
 	}
 }
 
@@ -1687,12 +1798,18 @@ Editor::toggle_marker_menu_glue ()
 		return;
 	}
 
+	begin_reversible_command (_("change marker lock style"));
+	XMLNode &before = _session->locations()->get_state();
+
 	if (loc->position_lock_style() == MusicTime) {
 		loc->set_position_lock_style (AudioTime);
 	} else {
 		loc->set_position_lock_style (MusicTime);
 	}
 
+	XMLNode &after = _session->locations()->get_state();
+	_session->add_command(new MementoCommand<Locations>(*(_session->locations()), &before, &after));
+	commit_reversible_command ();
 }
 
 void

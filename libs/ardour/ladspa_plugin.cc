@@ -497,8 +497,13 @@ LadspaPlugin::get_parameter_descriptor (uint32_t which, ParameterDescriptor& des
 			desc.upper = prh.UpperBound;
 		}
 	} else {
-		desc.max_unbound = true;
-		desc.upper = 4; /* completely arbitrary */
+		if (LADSPA_IS_HINT_TOGGLED (prh.HintDescriptor)) {
+			desc.max_unbound = false;
+			desc.upper = 1;
+		} else {
+			desc.max_unbound = true;
+			desc.upper = 4; /* completely arbitrary */
+		}
 	}
 
 	if (LADSPA_IS_HINT_HAS_DEFAULT (prh.HintDescriptor)) {
@@ -803,6 +808,7 @@ LadspaPlugin::load_preset (PresetRecord r)
 		for (uint32_t i = 0; i < (uint32_t) defs->count; ++i) {
 			if (parameter_is_input (defs->items[i].pid)) {
 				set_parameter(defs->items[i].pid, defs->items[i].value);
+				PresetPortSetValue (defs->items[i].pid, defs->items[i].value); /* EMIT SIGNAL */
 			}
 		}
 		lrdf_free_setting_values(defs);

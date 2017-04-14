@@ -185,7 +185,8 @@ class MixerStrip : public AxisView, public RouteUI, public Gtk::EventBox
 	Gtk::Table mute_solo_table;
 	Gtk::Table bottom_button_table;
 
-	ArdourButton                 meter_point_button;
+	void vca_assign (boost::shared_ptr<ARDOUR::VCA>);
+	void vca_unassign (boost::shared_ptr<ARDOUR::VCA>);
 
 	void meter_changed ();
 	void monitor_changed ();
@@ -246,7 +247,6 @@ class MixerStrip : public AxisView, public RouteUI, public Gtk::EventBox
 	void io_changed_proxy ();
 
 	Gtk::Menu *send_action_menu;
-	Gtk::MenuItem* rename_menu_item;
 	void build_send_action_menu ();
 
 	PBD::ScopedConnection panstate_connection;

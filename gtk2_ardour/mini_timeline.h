@@ -66,8 +66,9 @@ private:
 	void update_minitimeline ();
 	void draw_dots (cairo_t*, int left, int right, int y, ArdourCanvas::Color);
 	int  draw_mark (cairo_t*, int x0, int x1, const std::string&, bool& prelight);
+	int  draw_edge (cairo_t*, int x0, int x1, bool left, const std::string&, bool& prelight);
 
-	void render (cairo_t*, cairo_rectangle_t*);
+	void render (Cairo::RefPtr<Cairo::Context> const&, cairo_rectangle_t*);
 	void format_time (framepos_t when);
 
 	bool on_button_press_event (GdkEventButton*);
@@ -77,7 +78,6 @@ private:
 	bool on_leave_notify_event (GdkEventCrossing*);
 
 	void build_minitl_context_menu ();
-	void show_minitl_context_menu ();
 	void set_span (ARDOUR::framecnt_t);
 
 	Glib::RefPtr<Pango::Layout> _layout;

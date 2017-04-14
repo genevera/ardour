@@ -59,6 +59,7 @@ EditorSummary::EditorSummary (Editor* e)
 	  _image (0),
 	  _background_dirty (true)
 {
+	CairoWidget::use_nsglview ();
 	add_events (Gdk::POINTER_MOTION_MASK|Gdk::KEY_PRESS_MASK|Gdk::KEY_RELEASE_MASK|Gdk::ENTER_NOTIFY_MASK|Gdk::LEAVE_NOTIFY_MASK);
 	set_flags (get_flags() | Gtk::CAN_FOCUS);
 
@@ -210,8 +211,9 @@ EditorSummary::render_background_image ()
  *  @param cr Context.
  */
 void
-EditorSummary::render (cairo_t* cr, cairo_rectangle_t*)
+EditorSummary::render (Cairo::RefPtr<Cairo::Context> const& ctx, cairo_rectangle_t*)
 {
+	cairo_t* cr = ctx->cobj();
 
 	if (_session == 0) {
 		return;

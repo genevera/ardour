@@ -73,6 +73,7 @@
 #include "add_route_dialog.h"
 #include "ardour_button.h"
 #include "ardour_dialog.h"
+#include "ardour_spacer.h"
 #include "ardour_window.h"
 #include "editing.h"
 #include "enums.h"
@@ -89,6 +90,7 @@
 #include "engine_dialog.h"
 #include "export_video_dialog.h"
 #include "global_port_matrix.h"
+#include "idleometer.h"
 #include "keyeditor.h"
 #include "location_ui.h"
 #include "lua_script_manager.h"
@@ -101,7 +103,6 @@
 class About;
 class AddRouteDialog;
 class AddVideoDialog;
-class ArdourVSpacer;
 class BigClockWindow;
 class BundleManager;
 class EngineControl;
@@ -114,10 +115,12 @@ class RouteParams_UI;
 class SessionOptionEditor;
 class SpeakerDialog;
 class GlobalPortMatrixWindow;
+class IdleOMeter;
 #endif
 
 class VideoTimeLine;
 class ArdourKeyboard;
+class ArdourVSpacer;
 class AudioClock;
 class ButtonJoiner;
 class ConnectionEditor;
@@ -272,9 +275,6 @@ public:
 
 	void start_duplicate_routes ();
 
-	void add_lua_script ();
-	void remove_lua_script ();
-
 	void add_video (Gtk::Window* float_window);
 	void remove_video ();
 	void start_video_server_menu (Gtk::Window* float_window);
@@ -391,6 +391,8 @@ protected:
 	bool ignore_dual_punch;
 	void toggle_punch_in ();
 	void toggle_punch_out ();
+	void toggle_session_monitoring_in ();
+	void toggle_session_monitoring_disk ();
 	void show_loop_punch_ruler_and_disallow_hide ();
 	void reenable_hide_loop_punch_ruler_if_appropriate ();
 	void toggle_auto_return ();
@@ -431,8 +433,6 @@ private:
 	int  setup_windows ();
 	void setup_transport ();
 	void setup_clock ();
-
-	bool transport_expose (GdkEventExpose*);
 
 	static ARDOUR_UI *theArdourUI;
 	SessionDialog *_session_dialog;
@@ -526,8 +526,18 @@ private:
 	ArdourButton punch_out_button;
 	ArdourButton layered_button;
 
+	ArdourVSpacer recpunch_spacer;
+	ArdourVSpacer monitoring_spacer;
+
+	ArdourButton monitor_in_button;
+	ArdourButton monitor_disk_button;
+	ArdourButton auto_input_button;
+
 	Gtk::Label   punch_label;
 	Gtk::Label   layered_label;
+
+	Gtk::Label   punch_space;
+	Gtk::Label   mon_space;
 
 	void toggle_external_sync ();
 	void toggle_time_master ();
@@ -539,7 +549,6 @@ private:
 
 	ArdourButton auto_return_button;
 	ArdourButton follow_edits_button;
-	ArdourButton auto_input_button;
 	ArdourButton click_button;
 	ArdourButton sync_button;
 
@@ -557,6 +566,11 @@ private:
 	float            editor_meter_max_peak;
 	ArdourButton     editor_meter_peak_display;
 	bool             editor_meter_peak_button_release (GdkEventButton*);
+
+	bool editor_meter_button_press (GdkEventButton* ev);
+	void popup_editor_meter_menu (GdkEventButton* ev);
+	void add_editor_meter_type_item (Gtk::Menu_Helpers::MenuList&, Gtk::RadioMenuItem::Group&, std::string const &, ARDOUR::MeterType);
+	bool _suspend_editor_meter_callbacks;
 
 	void blink_handler (bool);
 	sigc::connection blink_connection;
@@ -645,6 +659,7 @@ private:
 	void edit_metadata ();
 	void import_metadata ();
 
+	void set_loop_sensitivity ();
 	void set_transport_sensitivity (bool);
 
 	//stuff for ProTools-style numpad
@@ -665,6 +680,8 @@ private:
 	void transport_roll ();
 	void transport_play_selection();
 	void transport_play_preroll();
+	void transport_rec_preroll();
+	void transport_rec_count_in();
 	void transport_forward (int option);
 	void transport_rewind (int option);
 	void transport_loop ();
@@ -714,6 +731,7 @@ private:
 	WM::Proxy<EngineControl> audio_midi_setup;
 	WM::Proxy<ExportVideoDialog> export_video_dialog;
 	WM::Proxy<LuaScriptManager> lua_script_window;
+	WM::Proxy<IdleOMeter> idleometer;
 
 	/* Windows/Dialogs that require a creator method */
 
@@ -799,7 +817,6 @@ private:
 
 	std::vector<std::string> positional_sync_strings;
 
-	void toggle_send_midi_feedback ();
 	void toggle_use_mmc ();
 	void toggle_send_mmc ();
 	void toggle_send_mtc ();
@@ -826,6 +843,7 @@ private:
 
 	PBD::ScopedConnectionList forever_connections;
 	PBD::ScopedConnection halt_connection;
+	PBD::ScopedConnection editor_meter_connection;
 
 	void step_edit_status_change (bool);
 
@@ -838,6 +856,7 @@ private:
 	int ambiguous_file (std::string file, std::vector<std::string> hits);
 
 	bool click_button_clicked (GdkEventButton *);
+	bool click_button_scroll (GdkEventScroll *);
 	bool sync_button_clicked (GdkEventButton *);
 
 	VisibilityGroup _status_bar_visibility;
@@ -900,6 +919,9 @@ private:
 	void escape ();
 	void close_current_dialog ();
 	void pre_release_dialog ();
+
+	bool bind_lua_action_script (GdkEventButton*, int);
+	void update_action_script_btn (int i, const std::string&);
 };
 
 #endif /* __ardour_gui_h__ */

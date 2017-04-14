@@ -127,7 +127,7 @@ class LIBARDOUR_API MidiRegion : public Region
 
 	MidiRegion (const SourceList&);
 	MidiRegion (boost::shared_ptr<const MidiRegion>);
-	MidiRegion (boost::shared_ptr<const MidiRegion>, frameoffset_t offset, const int32_t sub_num = 0);
+	MidiRegion (boost::shared_ptr<const MidiRegion>, ARDOUR::MusicFrame offset);
 
 	framecnt_t _read_at (const SourceList&, Evoral::EventSink<framepos_t>& dst,
 	                     framepos_t position,
@@ -146,12 +146,14 @@ class LIBARDOUR_API MidiRegion : public Region
 	void recompute_at_end ();
 
 	void set_position_internal (framepos_t pos, bool allow_bbt_recompute, const int32_t sub_num);
+	void set_position_music_internal (double qn);
 	void set_length_internal (framecnt_t len, const int32_t sub_num);
 	void set_start_internal (framecnt_t, const int32_t sub_num);
 	void trim_to_internal (framepos_t position, framecnt_t length, const int32_t sub_num);
 	void update_length_beats (const int32_t sub_num);
 
 	void model_changed ();
+	void model_shifted (double qn_distance);
 	void model_automation_state_changed (Evoral::Parameter const &);
 
 	void set_start_beats_from_start_frames ();
@@ -159,8 +161,10 @@ class LIBARDOUR_API MidiRegion : public Region
 
 	std::set<Evoral::Parameter> _filtered_parameters; ///< parameters that we ask our source not to return when reading
 	PBD::ScopedConnection _model_connection;
+	PBD::ScopedConnection _model_shift_connection;
 	PBD::ScopedConnection _source_connection;
 	PBD::ScopedConnection _model_contents_connection;
+	bool _ignore_shift;
 };
 
 } /* namespace ARDOUR */

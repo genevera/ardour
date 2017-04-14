@@ -14,9 +14,7 @@
       <menuitem action='SnapshotSwitch'/>
 #endif
       <menuitem action='SaveTemplate'/>
-#if 0
       <menuitem action='Archive'/>
-#endif
       <menu name='Metadata' action='Metadata'>
         <menuitem action='EditMetadata'/>
         <menuitem action='ImportMetadata'/>
@@ -29,11 +27,6 @@
       <menuitem action='addExistingPTFiles'/>
 #endif
       <!--menuitem action='importFromSession'/-->
-
-      <menu name='Scripting' action='Scripting'>
-        <menuitem action='AddLuaScript'/>
-        <menuitem action='RemoveLuaScript'/>
-      </menu>
 
       <menuitem action='OpenVideo'/>
       <menuitem action='CloseVideo'/>
@@ -76,6 +69,8 @@
       <menuitem action='record-roll'/>
       <menuitem action='ToggleRollForgetCapture'/>
       <menuitem action='Record'/>
+      <menuitem action='RecordPreroll'/>
+      <menuitem action='RecordCountIn'/>
 #if 0
       <menuitem action='toggle-skip-playback'/>
 #endif
@@ -287,7 +282,7 @@
       </menu>
       <menuitem action='set-mouse-mode-object-range'/>
       <separator/>
-      <menu action="ActionScripts">
+      <menu action="LuaScripts">
         <menuitem action='toggle-script-manager'/>
         <separator/>
         <menuitem action='script-action-1'/>
@@ -348,6 +343,7 @@
         <menuitem action='normalize-region'/>
         <menuitem action='boost-region-gain'/>
         <menuitem action='cut-region-gain'/>
+        <menuitem action='reset-region-gain'/>
         <menuitem action='reset-region-gain-envelopes'/>
         <menuitem action='toggle-region-gain-envelope-active'/>
       </menu>
@@ -577,6 +573,9 @@
 #if 0
       <menuitem action='toggle-speaker-config'/>
 #endif
+#if 0
+      <menuitem action='toggle-idle-o-meter'/>
+#endif
 
       <separator/>
 #ifdef MIXBUS
@@ -661,9 +660,7 @@
     <menuitem action='newaux'/>
     <separator/>
     <menuitem action='controls'/>
-#ifndef MIXBUS
     <menuitem action='send_options'/>
-#endif
     <separator/>
     <menuitem action='clear'/>
     <menuitem action='clear_pre'/>
@@ -793,6 +790,7 @@
       <menuitem action='normalize-region'/>
       <menuitem action='boost-region-gain'/>
       <menuitem action='cut-region-gain'/>
+      <menuitem action='reset-region-gain'/>
       <menuitem action='reset-region-gain-envelopes'/>
       <menuitem action='toggle-region-gain-envelope-active'/>
     </menu>

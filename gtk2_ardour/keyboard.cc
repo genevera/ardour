@@ -23,6 +23,7 @@
 #include "pbd/basename.h"
 
 #include "ardour/filesystem_paths.h"
+#include "ardour/revision.h"
 
 #include "ardour_ui.h"
 #include "public_editor.h"
@@ -54,13 +55,13 @@ guint ArdourKeyboard::trim_overlap_mod = Keyboard::TertiaryModifier;
 guint ArdourKeyboard::trim_anchored_mod = Keyboard::PrimaryModifier|Keyboard::TertiaryModifier;
 
 /* ControlPointDrag::motion() && LineDrag::motion()*/
-guint ArdourKeyboard::fine_adjust_mod = Keyboard::PrimaryModifier|Keyboard::SecondaryModifier;
+guint ArdourKeyboard::fine_adjust_mod = Keyboard::PrimaryModifier|Keyboard::SecondaryModifier; // XXX better just 2ndary
 
 /* ControlPointDrag::start_grab() && MarkerDrag::motion() */
 guint ArdourKeyboard::push_points_mod = Keyboard::PrimaryModifier|Keyboard::Level4Modifier;
 
 /* NoteResizeDrag::start_grab() */
-guint ArdourKeyboard::note_size_relative_mod = Keyboard::TertiaryModifier;
+guint ArdourKeyboard::note_size_relative_mod = Keyboard::TertiaryModifier; // XXX better: 2ndary
 
 ArdourKeyboard::ArdourKeyboard (ARDOUR_UI& ardour_ui) : ui (ardour_ui)
 {
@@ -91,7 +92,7 @@ ArdourKeyboard::find_bindings_files (map<string,string>& files)
 void
 ArdourKeyboard::setup_keybindings ()
 {
-	using namespace ARDOUR_COMMAND_LINE;
+	string keybindings_path = ARDOUR_COMMAND_LINE::keybindings_path;
 	string default_bindings = string_compose ("%1%2", UIConfiguration::instance().get_default_bindings(), Keyboard::binding_filename_suffix);
 	vector<string> strs;
 
@@ -102,6 +103,16 @@ ArdourKeyboard::setup_keybindings ()
 	/* set up the per-user bindings path */
 
 	string lowercase_program_name = downcase (string(PROGRAM_NAME));
+
+#ifndef MIXBUS // not for v4.0 just yet
+	/* extract and append minor vesion */
+	std::string rev (revision);
+	std::size_t pos = rev.find_first_of("-");
+	if (pos != string::npos && pos > 0) {
+		lowercase_program_name += "-";
+		lowercase_program_name += rev.substr (0, pos);
+	}
+#endif
 
 	user_keybindings_path = Glib::build_filename (user_config_directory(), lowercase_program_name + binding_filename_suffix);
 
@@ -206,8 +217,6 @@ ArdourKeyboard::setup_keybindings ()
 			}
 		}
 	}
-
-	info << string_compose (_("Loading keybindings from %1"), keybindings_path) << endmsg;
 
 	load_keybindings (keybindings_path);
 

@@ -243,6 +243,8 @@ RouteUI::reset ()
 	delete mute_menu;
 	mute_menu = 0;
 
+	_color_picker.reset ();
+
 	denormal_menu_item = 0;
 }
 
@@ -258,6 +260,41 @@ RouteUI::set_route (boost::shared_ptr<Route> rp)
 	reset ();
 
 	_route = rp;
+
+	if ( !_route->presentation_info().color_set() ) {
+		/* deal with older 4.x color, which was stored in the GUI object state */
+
+		string p = ARDOUR_UI::instance()->gui_object_state->get_string (route_state_id(), X_("color"));
+
+		if (!p.empty()) {
+
+			/* old v4.x or earlier session. Use this information */
+
+			int red, green, blue;
+			char colon;
+
+			stringstream ss (p);
+
+			/* old color format version was:
+
+			   16bit value for red:16 bit value for green:16 bit value for blue
+
+			   decode to rgb ..
+			*/
+
+			ss >> red;
+			ss >> colon;
+			ss >> green;
+			ss >> colon;
+			ss >> blue;
+
+			red >>= 2;
+			green >>= 2;
+			blue >>= 2;
+
+			_route->presentation_info().set_color (RGBA_TO_UINT (red, green, blue, 255));
+		}
+	}
 
 	if (set_color_from_route()) {
 		set_color (gdk_color_to_rgba (AxisView::unique_random_color ()));
@@ -285,6 +322,7 @@ RouteUI::set_route (boost::shared_ptr<Route> rp)
 	_route->solo_safe_control()->Changed.connect (route_connections, invalidator (*this), boost::bind (&RouteUI::update_solo_display, this), gui_context());
 	_route->solo_isolate_control()->Changed.connect (route_connections, invalidator (*this), boost::bind (&RouteUI::update_solo_display, this), gui_context());
 	_route->phase_control()->Changed.connect (route_connections, invalidator (*this), boost::bind (&RouteUI::polarity_changed, this), gui_context());
+	_route->fan_out.connect (route_connections, invalidator (*this), boost::bind (&RouteUI::fan_out, this, true, true), gui_context());
 
 	if (is_track()) {
 		track()->FreezeChange.connect (*this, invalidator (*this), boost::bind (&RouteUI::map_frozen, this), gui_context());
@@ -456,6 +494,8 @@ RouteUI::mute_press (GdkEventButton* ev)
 						_mute_release->routes = rl;
 					}
 
+					boost::shared_ptr<MuteControl> mc = _route->mute_control();
+					mc->start_touch (_session->audible_frame ());
 					_session->set_controls (route_list_to_control_list (rl, &Stripable::mute_control), _route->muted_by_self() ? 0.0 : 1.0, Controllable::InverseGroup);
 				}
 
@@ -470,7 +510,9 @@ RouteUI::mute_press (GdkEventButton* ev)
 					_mute_release->routes = rl;
 				}
 
-				_route->mute_control()->set_value (!_route->muted_by_self(), Controllable::UseGroup);
+				boost::shared_ptr<MuteControl> mc = _route->mute_control();
+				mc->start_touch (_session->audible_frame ());
+				mc->set_value (!_route->muted_by_self(), Controllable::UseGroup);
 			}
 		}
 	}
@@ -486,6 +528,8 @@ RouteUI::mute_release (GdkEventButton* /*ev*/)
 		delete _mute_release;
 		_mute_release = 0;
 	}
+
+	_route->mute_control()->stop_touch (false, _session->audible_frame ());
 
 	return false;
 }
@@ -1562,13 +1606,7 @@ RouteUI::toggle_solo_safe (Gtk::CheckMenuItem* check)
 void
 RouteUI::choose_color ()
 {
-	bool picked;
-	Gdk::Color c (gdk_color_from_rgba (_route->presentation_info().color()));
-	Gdk::Color const color = Gtkmm2ext::UI::instance()->get_color (_("Color Selection"), picked, &c);
-
-	if (picked) {
-		set_color (gdk_color_to_rgba (color));
-	}
+	_color_picker.popup (_route);
 }
 
 /** Set the route's own color.  This may not be used for display if
@@ -1940,6 +1978,8 @@ RouteUI::parameter_changed (string const & p)
 		check_rec_enable_sensitivity ();
 	} else if (p == "use-monitor-bus" || p == "solo-control-is-listen-control" || p == "listen-position") {
 		set_button_names ();
+	} else if (p == "session-monitoring") {
+		update_monitoring_display ();
 	} else if (p == "auto-input") {
 		update_monitoring_display ();
 	} else if (p == "blink-rec-arm") {
@@ -2172,40 +2212,6 @@ RouteUI::route_color () const
 	if (g && g->is_color()) {
 		set_color_from_rgba (c, GroupTabs::group_color (g));
 	} else {
-
-		/* deal with older 4.x color, which was stored in the GUI object state */
-
-		string p = ARDOUR_UI::instance()->gui_object_state->get_string (route_state_id(), X_("color"));
-
-		if (!p.empty()) {
-
-			/* old v4.x or earlier session. Use this information */
-
-			int red, green, blue;
-			char colon;
-
-			stringstream ss (p);
-
-			/* old color format version was:
-
-			   16bit value for red:16 bit value for green:16 bit value for blue
-
-			   decode to rgb ..
-			*/
-
-			ss >> red;
-			ss >> colon;
-			ss >> green;
-			ss >> colon;
-			ss >> blue;
-
-			red >>= 2;
-			green >>= 2;
-			blue >>= 2;
-
-			_route->presentation_info().set_color (RGBA_TO_UINT (red, green, blue, 255));
-		}
-
 		set_color_from_rgba (c, _route->presentation_info().color());
 	}
 
@@ -2287,6 +2293,7 @@ RoutePinWindowProxy::route_going_away ()
 	_window = 0;
 	WM::Manager::instance().remove (this);
 	going_away_connection.disconnect();
+	delete this;
 }
 
 void

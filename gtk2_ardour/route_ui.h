@@ -26,6 +26,7 @@
 #include "pbd/signals.h"
 
 #include <gtkmm/textview.h>
+#include <gtkmm/colorselection.h>
 
 #include "gtkmm2ext/widget_state.h"
 
@@ -40,6 +41,7 @@
 
 #include "axis_view.h"
 #include "selectable.h"
+#include "stripable_colorpicker.h"
 #include "window_manager.h"
 
 namespace ARDOUR {
@@ -74,7 +76,7 @@ class RoutePinWindowProxy : public WM::ProxyBase
 	PBD::ScopedConnection going_away_connection;
 };
 
-class RouteUI : public virtual ARDOUR::SessionHandlePtr, public virtual PBD::ScopedConnectionList, public virtual Selectable, public virtual sigc::trackable
+class RouteUI : public virtual Selectable, public virtual ARDOUR::SessionHandlePtr, public virtual PBD::ScopedConnectionList, public virtual sigc::trackable
 {
   public:
 	RouteUI (ARDOUR::Session*);
@@ -335,6 +337,8 @@ private:
 	int _i_am_the_modifier;
 	std::vector<ArdourButton*> _invert_buttons;
 	Gtk::Menu* _invert_menu;
+
+	StripableColorDialog _color_picker;
 
 	static void set_showing_sends_to (boost::shared_ptr<ARDOUR::Route>);
 	static boost::weak_ptr<ARDOUR::Route> _showing_sends_to;

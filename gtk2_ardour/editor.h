@@ -256,14 +256,16 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	Selection& get_selection() const { return *selection; }
 	bool get_selection_extents (framepos_t &start, framepos_t &end) const;  // the time extents of the current selection, whether Range, Region(s), Control Points, or Notes
 	Selection& get_cut_buffer() const { return *cut_buffer; }
-	void track_mixer_selection ();
+
+	void set_selection (std::list<Selectable*>, Selection::Operation);
 
 	bool extend_selection_to_track (TimeAxisView&);
 
 	void play_selection ();
-	framepos_t get_preroll ();
 	void maybe_locate_with_edit_preroll (framepos_t);
 	void play_with_preroll ();
+	void rec_with_preroll ();
+	void rec_with_count_in ();
 	void select_all_in_track (Selection::Operation op);
 	void select_all_objects (Selection::Operation op);
 	void invert_selection_in_track ();
@@ -329,6 +331,8 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	void set_selected_mixer_strip (TimeAxisView&);
 	void mixer_strip_width_changed ();
 	void hide_track_in_display (TimeAxisView* tv, bool apply_to_selection = false);
+	void show_track_in_display (TimeAxisView* tv, bool move_into_view = false);
+	void tempo_curve_selected (ARDOUR::TempoSection* ts, bool yn);
 
 	/* nudge is initiated by transport controls owned by ARDOUR_UI */
 
@@ -367,8 +371,8 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 
 	/* fades */
 
- 	void toggle_region_fades (int dir);
- 	void update_region_fade_visibility ();
+	void toggle_region_fades (int dir);
+	void update_region_fade_visibility ();
 
 	/* redirect shared ops menu. caller must free returned menu */
 
@@ -453,20 +457,20 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 
 	TrackViewList axis_views_from_routes (boost::shared_ptr<ARDOUR::RouteList>) const;
 
-	void snap_to (framepos_t&       first,
-	              ARDOUR::RoundMode direction = ARDOUR::RoundNearest,
-	              bool              for_mark  = false,
-		      bool              ensure_snap = false);
+	void snap_to (ARDOUR::MusicFrame& first,
+	              ARDOUR::RoundMode   direction = ARDOUR::RoundNearest,
+	              bool                for_mark  = false,
+		      bool                ensure_snap = false);
 
-	void snap_to_with_modifier (framepos_t&       first,
-	                            GdkEvent const *  ev,
-	                            ARDOUR::RoundMode direction = ARDOUR::RoundNearest,
-	                            bool              for_mark  = false);
+	void snap_to_with_modifier (ARDOUR::MusicFrame& first,
+	                            GdkEvent const *    ev,
+	                            ARDOUR::RoundMode   direction = ARDOUR::RoundNearest,
+	                            bool                for_mark  = false);
 
-	void snap_to (framepos_t&       first,
-	              framepos_t&       last,
-	              ARDOUR::RoundMode direction = ARDOUR::RoundNearest,
-	              bool              for_mark  = false);
+	void snap_to (ARDOUR::MusicFrame& first,
+	              ARDOUR::MusicFrame& last,
+	              ARDOUR::RoundMode   direction = ARDOUR::RoundNearest,
+	              bool                for_mark  = false);
 
 	void begin_selection_op_history ();
 	void begin_reversible_selection_op (std::string cmd_name);
@@ -543,7 +547,7 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 
 	/* editing operations that need to be public */
 	void mouse_add_new_marker (framepos_t where, bool is_cd=false);
-	void split_regions_at (framepos_t, RegionSelection&, const int32_t sub_num, bool snap = true);
+	void split_regions_at (ARDOUR::MusicFrame, RegionSelection&, bool snap = true);
 	void split_region_at_points (boost::shared_ptr<ARDOUR::Region>, ARDOUR::AnalysisFeatureList&, bool can_ferret, bool select_new = false);
 	RegionSelection get_regions_from_selection_and_mouse (framepos_t);
 
@@ -555,6 +559,7 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
   protected:
 	void map_transport_state ();
 	void map_position_change (framepos_t);
+	void transport_looped ();
 
 	void on_realize();
 
@@ -655,6 +660,9 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	void toggle_marker_lines ();
 	void set_marker_line_visibility (bool);
 
+	void jump_forward_to_mark ();
+	void jump_backward_to_mark ();
+
 	uint32_t location_marker_color;
 	uint32_t location_range_color;
 	uint32_t location_loop_color;
@@ -729,6 +737,9 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 
 	void get_equivalent_regions (RegionView* rv, std::vector<RegionView*> &, PBD::PropertyID) const;
 	RegionSelection get_equivalent_regions (RegionSelection &, PBD::PropertyID) const;
+	RegionView* regionview_from_region (boost::shared_ptr<ARDOUR::Region>) const;
+	RouteTimeAxisView* rtav_from_route (boost::shared_ptr<ARDOUR::Route>) const;
+
 	void mapover_tracks (sigc::slot<void,RouteTimeAxisView&,uint32_t> sl, TimeAxisView*, PBD::PropertyID) const;
 	void mapover_tracks_with_unique_playlists (sigc::slot<void,RouteTimeAxisView&,uint32_t> sl, TimeAxisView*, PBD::PropertyID) const;
 
@@ -1150,10 +1161,12 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	TrackViewList get_tracks_for_range_action () const;
 
 	sigc::connection super_rapid_screen_update_connection;
-	framepos_t last_update_frame;
 	void center_screen_internal (framepos_t, float);
 
 	void super_rapid_screen_update ();
+
+	int64_t _last_update_time;
+	double _err_screen_engine;
 
 	void session_going_away ();
 
@@ -1257,6 +1270,7 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	void normalize_region ();
 	void reset_region_scale_amplitude ();
 	void adjust_region_gain (bool up);
+	void reset_region_gain ();
 	void quantize_region ();
 	void quantize_regions (const RegionSelection& rs);
 	void legatize_region (bool shrink_only);
@@ -1337,8 +1351,6 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	/* import & embed */
 
 	void add_external_audio_action (Editing::ImportMode);
-	void external_audio_dialog ();
-	void session_import_dialog ();
 
 	int  check_whether_and_how_to_import(std::string, bool all_or_nothing = true);
 	bool check_multichannel_status (const std::vector<std::string>& paths);
@@ -1401,6 +1413,10 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 
 	AnalysisWindow* analysis_window;
 
+	/* import & embed */
+	void external_audio_dialog ();
+	void session_import_dialog ();
+
 	/* import specific info */
 
 	struct EditorImportStatus : public ARDOUR::ImportStatus {
@@ -1421,7 +1437,7 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 
 	void import_audio (bool as_tracks);
 	void do_import (std::vector<std::string> paths, bool split, bool as_tracks);
-	void import_smf_tempo_map (Evoral::SMF const &);
+	void import_smf_tempo_map (Evoral::SMF const &, framepos_t pos);
 	void move_to_start ();
 	void move_to_end ();
 	void center_playhead ();
@@ -1439,8 +1455,6 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	void clear_locations ();
 	void unhide_markers ();
 	void unhide_ranges ();
-	void jump_forward_to_mark ();
-	void jump_backward_to_mark ();
 	void cursor_align (bool playhead_to_edit);
 	void toggle_skip_playback ();
 
@@ -1603,6 +1617,10 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	void queue_visual_videotimeline_update ();
 	void embed_audio_from_video (std::string, framepos_t n = 0, bool lock_position_to_video = true);
 
+	bool track_selection_change_without_scroll () const {
+		return _track_selection_change_without_scroll;
+	}
+
 	PBD::Signal0<void> EditorFreeze;
 	PBD::Signal0<void> EditorThaw;
 
@@ -1632,8 +1650,6 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	void toggle_region_mute ();
 
 	void initialize_canvas ();
-
-	void set_script_action_name (int i, const std::string&);
 
 	/* display control */
 
@@ -1675,7 +1691,10 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	void marker_menu_rename ();
 	void rename_marker (ArdourMarker *marker);
 	void toggle_marker_lock_style ();
+	void toggle_tempo_clamped ();
 	void toggle_tempo_type ();
+	void continue_previous_tempo ();
+	void ramp_to_next_tempo ();
 	void toggle_marker_menu_lock ();
 	void toggle_marker_menu_glue ();
 	void marker_menu_hide ();
@@ -1698,7 +1717,7 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	void marker_context_menu (GdkEventButton*, ArdourCanvas::Item*);
 	void tempo_or_meter_marker_context_menu (GdkEventButton*, ArdourCanvas::Item*);
 	void new_transport_marker_context_menu (GdkEventButton*, ArdourCanvas::Item*);
-	void build_range_marker_menu (bool, bool);
+	void build_range_marker_menu (ARDOUR::Location *, bool, bool);
 	void build_marker_menu (ARDOUR::Location *);
 	void build_tempo_marker_menu (TempoMarker *, bool);
 	void build_meter_marker_menu (MeterMarker *, bool);
@@ -1726,7 +1745,7 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	void compute_current_bbt_points (std::vector<ARDOUR::TempoMap::BBTPoint>& grid, framepos_t left, framepos_t right);
 
 	void tempo_map_changed (const PBD::PropertyChange&);
-	void marker_position_changed ();
+	void tempometric_position_changed (const PBD::PropertyChange&);
 	void redisplay_tempo (bool immediate_redraw);
 
 	uint32_t bbt_beat_subdivision;
@@ -1840,7 +1859,7 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	void region_selection_changed ();
 	sigc::connection editor_regions_selection_changed_connection;
 	void sensitize_all_region_actions (bool);
-	void sensitize_the_right_region_actions ();
+	void sensitize_the_right_region_actions (bool because_canvas_crossing);
 	bool _all_region_actions_sensitized;
 	/** Flag to block region action handlers from doing what they normally do;
 	 *  I tried Gtk::Action::block_activate() but this doesn't work (ie it doesn't
@@ -1850,6 +1869,8 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	bool _last_region_menu_was_main;
 	void point_selection_changed ();
 	void marker_selection_changed ();
+
+	bool _track_selection_change_without_scroll;
 
 	void cancel_selection ();
 	void cancel_time_selection ();
@@ -2138,7 +2159,9 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	void get_regions_at (RegionSelection&, framepos_t where, const TrackViewList& ts) const;
 	void get_regions_after (RegionSelection&, framepos_t where, const TrackViewList& ts) const;
 
-	RegionSelection get_regions_from_selection_and_edit_point ();
+	RegionSelection get_regions_from_selection_and_edit_point (Editing::EditIgnoreOption = Editing::EDIT_IGNORE_NONE,
+	                                                           bool use_context_click = false,
+	                                                           bool from_outside_canvas = false);
 	RegionSelection get_regions_from_selection_and_entered () const;
 
 	void start_updating_meters ();
@@ -2148,14 +2171,14 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	void select_next_route ();
 	void select_prev_route ();
 
-	void snap_to_internal (framepos_t&       first,
-	                       ARDOUR::RoundMode direction = ARDOUR::RoundNearest,
-	                       bool              for_mark  = false,
-			       bool              ensure_snap = false);
+	void snap_to_internal (ARDOUR::MusicFrame& first,
+	                       ARDOUR::RoundMode   direction = ARDOUR::RoundNearest,
+	                       bool                for_mark  = false,
+			       bool                ensure_snap = false);
 
-	void timecode_snap_to_internal (framepos_t&       first,
-	                                ARDOUR::RoundMode direction = ARDOUR::RoundNearest,
-	                                bool              for_mark  = false);
+	void timecode_snap_to_internal (ARDOUR::MusicFrame& first,
+	                                ARDOUR::RoundMode   direction = ARDOUR::RoundNearest,
+	                                bool                for_mark  = false);
 
 	RhythmFerret* rhythm_ferret;
 
@@ -2218,8 +2241,6 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	bool _region_selection_change_updates_region_list;
 
 	void setup_fade_images ();
-	std::map<ARDOUR::FadeShape, Gtk::Image*> _fade_in_images;
-	std::map<ARDOUR::FadeShape, Gtk::Image*> _fade_out_images;
 	std::map<ARDOUR::FadeShape, Gtk::Image*> _xfade_in_images;
 	std::map<ARDOUR::FadeShape, Gtk::Image*> _xfade_out_images;
 
@@ -2257,7 +2278,10 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 	QuantizeDialog* quantize_dialog;
 	MainMenuDisabler* _main_menu_disabler;
 
-	/* private helper functions to help with registering axis */
+	/* private helper functions to help with registering region actions */
+
+	Glib::RefPtr<Gtk::Action> register_region_action (Glib::RefPtr<Gtk::ActionGroup> group, Editing::RegionActionTarget, char const * name, char const * label, sigc::slot<void> slot);
+	void register_toggle_region_action (Glib::RefPtr<Gtk::ActionGroup> group, Editing::RegionActionTarget, char const * name, char const * label, sigc::slot<void> slot);
 
 	Glib::RefPtr<Gtk::Action> reg_sens (Glib::RefPtr<Gtk::ActionGroup> group, char const * name, char const * label, sigc::slot<void> slot);
 	void toggle_reg_sens (Glib::RefPtr<Gtk::ActionGroup> group, char const * name, char const * label, sigc::slot<void> slot);

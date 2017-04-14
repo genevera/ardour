@@ -285,6 +285,13 @@ def create_stored_revision():
         print('Could not open libs/ardour/revision.cc for writing\n')
         sys.exit(-1)
 
+def get_depstack_rev(depstack_root):
+    try:
+        with open(depstack_root + '/../.vers', 'r') as f:
+            return f.readline()
+    except IOError:
+        return '-unknown-';
+
 def set_compiler_flags (conf,opt):
     #
     # Compiler flags and other system-dependent stuff
@@ -357,6 +364,8 @@ int main() { return 0; }''',
             conf.env['build_host'] = 'yosemite'
         elif re.search ("^15[.]", version) != None:
             conf.env['build_host'] = 'el_capitan'
+        elif re.search ("^16[.]", version) != None:
+            conf.env['build_host'] = 'sierra'
         else:
             conf.env['build_host'] = 'irrelevant'
 
@@ -380,8 +389,10 @@ int main() { return 0; }''',
                 conf.env['build_target'] = 'mavericks'
             elif re.search ("^14[.]", version) != None:
                 conf.env['build_target'] = 'yosemite'
-            else:
+            elif re.search ("^15[.]", version) != None:
                 conf.env['build_target'] = 'el_capitan'
+            else:
+                conf.env['build_target'] = 'sierra'
         else:
             match = re.search(
                     "(?P<cpu>i[0-6]86|x86_64|powerpc|ppc|ppc64|arm|s390x?)",
@@ -402,11 +413,11 @@ int main() { return 0; }''',
         #
         compiler_flags.append ('-U__STRICT_ANSI__')
 
-    if opt.use_libcpp or conf.env['build_host'] in [ 'el_capitan' ]:
+    if opt.use_libcpp or conf.env['build_host'] in [ 'el_capitan', 'sierra' ]:
        cxx_flags.append('--stdlib=libc++')
        linker_flags.append('--stdlib=libc++')
 
-    if conf.options.cxx11 or conf.env['build_host'] in [ 'mavericks', 'yosemite', 'el_capitan' ]:
+    if conf.options.cxx11 or conf.env['build_host'] in [ 'mavericks', 'yosemite', 'el_capitan', 'sierra' ]:
         conf.check_cxx(cxxflags=["-std=c++11"])
         cxx_flags.append('-std=c++11')
         if platform == "darwin":
@@ -414,7 +425,7 @@ int main() { return 0; }''',
             # from requiring a full path to requiring just the header name.
             cxx_flags.append('-DCARBON_FLAT_HEADERS')
 
-            if not opt.use_libcpp and not conf.env['build_host'] in [ 'el_capitan' ]:
+            if not opt.use_libcpp and not conf.env['build_host'] in [ 'el_capitan', 'sierra' ]:
                 cxx_flags.append('--stdlib=libstdc++')
                 linker_flags.append('--stdlib=libstdc++')
             # Prevents visibility issues in standard headers
@@ -423,7 +434,7 @@ int main() { return 0; }''',
             cxx_flags.append('-DBOOST_NO_AUTO_PTR')
 
 
-    if (is_clang and platform == "darwin") or conf.env['build_host'] in ['mavericks', 'yosemite', 'el_capitan']:
+    if (is_clang and platform == "darwin") or conf.env['build_host'] in [ 'mavericks', 'yosemite', 'el_capitan', 'sierra' ]:
         # Silence warnings about the non-existing osx clang compiler flags
         # -compatibility_version and -current_version.  These are Waf
         # generated and not needed with clang
@@ -534,10 +545,15 @@ int main() { return 0; }''',
                 ("-DMAC_OS_X_VERSION_MIN_REQUIRED=1070",
                  '-mmacosx-version-min=10.7'))
 
-    elif conf.env['build_target'] in [ 'mavericks', 'yosemite', 'el_capitan' ]:
+    elif conf.env['build_target'] in [ 'mavericks', 'yosemite' ]:
         compiler_flags.extend(
                 ("-DMAC_OS_X_VERSION_MAX_ALLOWED=1090",
                  "-mmacosx-version-min=10.8"))
+
+    elif conf.env['build_target'] in ['el_capitan', 'sierra' ]:
+        compiler_flags.extend(
+                ("-DMAC_OS_X_VERSION_MAX_ALLOWED=1090",
+                 "-mmacosx-version-min=10.9"))
 
     #
     # save off CPU element in an env
@@ -707,6 +723,8 @@ def options(opt):
                    help='Build internal libs as static libraries')
     opt.add_option('--use-external-libs', action='store_true', default=False, dest='use_external_libs',
                    help='Use external/system versions of some bundled libraries')
+    opt.add_option('--keepflags', action='store_true', default=False, dest='keepflags',
+                    help='Do not ignore CFLAGS/CXXFLAGS environment vars')
     opt.add_option('--luadoc', action='store_true', default=False, dest='luadoc',
                     help='Compile Tool to dump LuaBindings (needs C++11)')
     opt.add_option('--canvasui', action='store_true', default=False, dest='canvasui',
@@ -799,7 +817,7 @@ def configure(conf):
         conf.env['MSVC_TARGETS'] = ['x64']
         conf.load('msvc')
 
-    if Options.options.debug:
+    if Options.options.debug and not Options.options.keepflags:
         # Nuke user CFLAGS/CXXFLAGS if debug is set (they likely contain -O3, NDEBUG, etc)
         conf.env['CFLAGS'] = []
         conf.env['CXXFLAGS'] = []
@@ -841,8 +859,10 @@ def configure(conf):
         conf.env.append_value('CXXFLAGS',  [prefinclude ])
         conf.env.append_value('LINKFLAGS', [ preflib ])
         autowaf.display_msg(conf, 'Will build against private GTK dependency stack in ' + user_gtk_root, 'yes')
+        conf.env['DEPSTACK_REV'] = get_depstack_rev (Options.options.depstack_root)
     else:
         autowaf.display_msg(conf, 'Will build against private GTK dependency stack', 'no')
+        conf.env['DEPSTACK_REV'] = '-system-'
 
     if sys.platform == 'darwin':
         conf.define ('NEED_INTL', 1)
@@ -1210,19 +1230,18 @@ const char* const ardour_config_info = "\\n\\
     write_config_text('Internal Shared Libraries', conf.is_defined('INTERNAL_SHARED_LIBS'))
     write_config_text('Use External Libraries', conf.is_defined('USE_EXTERNAL_LIBS'))
     write_config_text('Library exports hidden', conf.is_defined('EXPORT_VISIBILITY_HIDDEN'))
-
+    write_config_text('Free/Demo copy',        conf.is_defined('FREEBIE'))
+    config_text.write("\\n\\\n")
     write_config_text('ALSA DBus Reservation', conf.is_defined('HAVE_DBUS'))
     write_config_text('Architecture flags',    opts.arch)
     write_config_text('Aubio',                 conf.is_defined('HAVE_AUBIO'))
     write_config_text('AudioUnits',            conf.is_defined('AUDIOUNIT_SUPPORT'))
-    write_config_text('Free/Demo copy',        conf.is_defined('FREEBIE'))
     write_config_text('Build target',          conf.env['build_target'])
     write_config_text('Canvas Test UI',        conf.is_defined('CANVASTESTUI'))
     write_config_text('CoreAudio',             conf.is_defined('HAVE_COREAUDIO'))
     write_config_text('CoreAudio 10.5 compat', conf.is_defined('COREAUDIO105'))
     write_config_text('Debug RT allocations',  conf.is_defined('DEBUG_RT_ALLOC'))
     write_config_text('Debug Symbols',         conf.is_defined('debug_symbols') or conf.env['DEBUG'])
-    write_config_text('Process thread timing', conf.is_defined('PT_TIMING'))
     write_config_text('Denormal exceptions',   conf.is_defined('DEBUG_DENORMAL_EXCEPTION'))
     write_config_text('FLAC',                  conf.is_defined('HAVE_FLAC'))
     write_config_text('FPU optimization',      opts.fpu_optimization)
@@ -1234,8 +1253,10 @@ const char* const ardour_config_info = "\\n\\
     write_config_text('LV2 support',           conf.is_defined('LV2_SUPPORT'))
     write_config_text('LV2 extensions',        conf.is_defined('LV2_EXTENDED'))
     write_config_text('LXVST support',         conf.is_defined('LXVST_SUPPORT'))
+    write_config_text('Mac VST support',       conf.is_defined('MACVST_SUPPORT'))
     write_config_text('OGG',                   conf.is_defined('HAVE_OGG'))
     write_config_text('Phone home',            conf.is_defined('PHONE_HOME'))
+    write_config_text('Process thread timing', conf.is_defined('PT_TIMING'))
     write_config_text('Program name',          opts.program_name)
     write_config_text('Samplerate',            conf.is_defined('HAVE_SAMPLERATE'))
     write_config_text('PT format',             conf.is_defined('PTFORMAT'))
@@ -1244,19 +1265,20 @@ const char* const ardour_config_info = "\\n\\
     write_config_text('Translation',           opts.nls)
 #    write_config_text('Tranzport',             opts.tranzport)
     write_config_text('Unit tests',            conf.env['BUILD_TESTS'])
-    write_config_text('Mac i386 Architecture', opts.generic)
-    write_config_text('Mac ppc Architecture',  opts.ppc)
-    write_config_text('Mac VST support',       conf.is_defined('MACVST_SUPPORT'))
     write_config_text('Windows VST support',   opts.windows_vst)
     write_config_text('Wiimote support',       conf.is_defined('BUILD_WIIMOTE'))
     write_config_text('Windows key',           opts.windows_key)
-
+    config_text.write("\\n\\\n")
     write_config_text('PortAudio Backend',     conf.env['BUILD_PABACKEND'])
     write_config_text('CoreAudio/Midi Backend',conf.env['BUILD_CORECRAPPITA'])
     write_config_text('ALSA Backend',          conf.env['BUILD_ALSABACKEND'])
     write_config_text('Dummy backend',         conf.env['BUILD_DUMMYBACKEND'])
     write_config_text('JACK Backend',          conf.env['BUILD_JACKBACKEND'])
-
+    config_text.write("\\n\\\n")
+    write_config_text('Builstack', conf.env['DEPSTACK_REV'])
+    write_config_text('Mac i386 Architecture', opts.generic)
+    write_config_text('Mac ppc Architecture',  opts.ppc)
+    config_text.write("\\n\\\n")
     write_config_text('C compiler flags',      conf.env['CFLAGS'])
     write_config_text('C++ compiler flags',    conf.env['CXXFLAGS'])
     write_config_text('Linker flags',          conf.env['LINKFLAGS'])
@@ -1266,7 +1288,7 @@ const char* const ardour_config_info = "\\n\\
     print('')
 
     if Options.options.dist_target == 'mingw' or Options.options.dist_target == 'msvc':
-        create_resource_file(Options.options.program_name.lower())
+        create_resource_file(Options.options.program_name)
 
 def build(bld):
     create_stored_revision()
@@ -1338,3 +1360,7 @@ def tarball(bld):
 
 def test(bld):
     subprocess.call("gtk2_ardour/artest")
+
+def help2man(bld):
+    cmd = "help2man -s 1 -N -o ardour.1 -n Ardour --version-string='Ardour %s' gtk2_ardour/ardev" % PROGRAM_VERSION
+    subprocess.call(cmd, shell=True)

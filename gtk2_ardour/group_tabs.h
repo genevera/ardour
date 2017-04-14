@@ -115,7 +115,7 @@ private:
 	void disable_all ();
 	void remove_group (ARDOUR::RouteGroup *);
 
-	void render (cairo_t *, cairo_rectangle_t*);
+	void render (Cairo::RefPtr<Cairo::Context> const&, cairo_rectangle_t*);
 	void on_size_request (Gtk::Requisition *);
 	bool on_button_press_event (GdkEventButton *);
 	bool on_motion_notify_event (GdkEventMotion *);
@@ -128,6 +128,7 @@ private:
 	void route_removed_from_route_group (ARDOUR::RouteGroup *, boost::weak_ptr<ARDOUR::Route>);
 
 	void assign_group_to_master (uint32_t which, ARDOUR::RouteGroup*, bool rename_master) const;
+	void unassign_group_to_master (uint32_t which, ARDOUR::RouteGroup*) const;
 	void assign_selection_to_master (uint32_t which);
 	void assign_recenabled_to_master (uint32_t which);
 	void assign_soloed_to_master (uint32_t which);

@@ -49,6 +49,7 @@ VSTPlugin::VSTPlugin (AudioEngine& engine, Session& session, VSTHandle* handle)
 	, _num (0)
 	, _transport_frame (0)
 	, _transport_speed (0.f)
+	, _eff_bypassed (false)
 {
 	memset (&_timeInfo, 0, sizeof(_timeInfo));
 }
@@ -64,6 +65,7 @@ VSTPlugin::VSTPlugin (const VSTPlugin& other)
 	, _transport_frame (0)
 	, _transport_speed (0.f)
 	, _parameter_defaults (other._parameter_defaults)
+	, _eff_bypassed (other._eff_bypassed)
 {
 	memset (&_timeInfo, 0, sizeof(_timeInfo));
 }
@@ -74,15 +76,46 @@ VSTPlugin::~VSTPlugin ()
 }
 
 void
-VSTPlugin::set_plugin (AEffect* e)
+VSTPlugin::open_plugin ()
 {
-	_plugin = e;
+	_plugin = _state->plugin;
+	assert (_plugin->user == this); // should have been set by {mac_vst|fst|lxvst}_instantiate
 	_plugin->user = this;
+	_state->plugin->dispatcher (_plugin, effOpen, 0, 0, 0, 0);
+	_state->vst_version = _plugin->dispatcher (_plugin, effGetVstVersion, 0, 0, 0, 0);
+}
 
+void
+VSTPlugin::init_plugin ()
+{
 	/* set rate and blocksize */
-
 	_plugin->dispatcher (_plugin, effSetSampleRate, 0, 0, NULL, (float) _session.frame_rate());
 	_plugin->dispatcher (_plugin, effSetBlockSize, 0, _session.get_block_size(), NULL, 0.0f);
+}
+
+
+uint32_t
+VSTPlugin::designated_bypass_port ()
+{
+	if (_plugin->dispatcher (_plugin, effCanDo, 0, 0, const_cast<char*> ("bypass"), 0.0f) != 0) {
+#ifdef ALLOW_VST_BYPASS_TO_FAIL // yet unused, see also plugin_insert.cc
+		return UINT32_MAX - 1; // emulate a port
+#else
+		/* check if plugin actually supports it,
+		 * e.g. u-he Presswerk  CanDo "bypass"  but calling effSetBypass is a NO-OP.
+		 * (presumably the plugin-author thinks hard-bypassing is a bad idea,
+		 * particularly since the plugin itself provides a bypass-port)
+		 */
+		intptr_t value = 0; // not bypassed
+		if (0 != _plugin->dispatcher (_plugin, 44 /*effSetBypass*/, 0, value, NULL, 0)) {
+			cerr << "Emulate VST Bypass Port for " << name() << endl; // XXX DEBUG
+			return UINT32_MAX - 1; // emulate a port
+		} else {
+			cerr << "Do *not* Emulate VST Bypass Port for " << name() << endl; // XXX DEBUG
+		}
+#endif
+	}
+	return UINT32_MAX;
 }
 
 void
@@ -115,12 +148,32 @@ VSTPlugin::default_value (uint32_t which)
 float
 VSTPlugin::get_parameter (uint32_t which) const
 {
+	if (which == UINT32_MAX - 1) {
+		// ardour uses enable-semantics: 1: enabled, 0: bypassed
+		return _eff_bypassed ? 0.f : 1.f;
+	}
 	return _plugin->getParameter (_plugin, which);
 }
 
 void
 VSTPlugin::set_parameter (uint32_t which, float newval)
 {
+	if (which == UINT32_MAX - 1) {
+		// ardour uses enable-semantics: 1: enabled, 0: bypassed
+		intptr_t value = (newval <= 0.f) ? 1 : 0;
+		cerr << "effSetBypass " << value << endl; // XXX DEBUG
+		int rv = _plugin->dispatcher (_plugin, 44 /*effSetBypass*/, 0, value, NULL, 0);
+		if (0 != rv) {
+			_eff_bypassed = (value == 1);
+		} else {
+			cerr << "effSetBypass failed rv=" << rv << endl; // XXX DEBUG
+#ifdef ALLOW_VST_BYPASS_TO_FAIL // yet unused, see also vst_plugin.cc
+			// emit signal.. hard un/bypass from here?!
+#endif
+		}
+		return;
+	}
+
 	float oldval = get_parameter (which);
 
 	if (PBD::floateq (oldval, newval, 1)) {
@@ -136,6 +189,14 @@ VSTPlugin::set_parameter (uint32_t which, float newval)
 		Plugin::set_parameter (which, newval);
 	}
 }
+
+void
+VSTPlugin::parameter_changed_externally (uint32_t which, float value )
+{
+	ParameterChangedExternally (which, value); /* EMIT SIGNAL */
+	Plugin::set_parameter (which, value);
+}
+
 
 uint32_t
 VSTPlugin::nth_parameter (uint32_t n, bool& ok) const
@@ -446,8 +507,10 @@ VSTPlugin::load_user_preset (PresetRecord r)
 
 						assert (index);
 						assert (value);
-
-						set_parameter (atoi (index->value().c_str()), atof (value->value().c_str ()));
+						const uint32_t p = atoi (index->value().c_str());
+						const float v = atof (value->value().c_str ());
+						set_parameter (p, v);
+						PresetPortSetValue (p, v); /* EMIT SIGNAL */
 				}
 			}
 			return true;
@@ -455,6 +518,8 @@ VSTPlugin::load_user_preset (PresetRecord r)
 	}
 	return false;
 }
+
+#include "sha1.c"
 
 string
 VSTPlugin::do_save_preset (string name)
@@ -464,9 +529,23 @@ VSTPlugin::do_save_preset (string name)
 		return "";
 	}
 
+	// prevent dups -- just in case
+	t->root()->remove_nodes_and_delete (X_("label"), name);
+
 	XMLNode* p = 0;
-	/* XXX: use of _presets.size() + 1 for the unique ID here is dubious at best */
-	string const uri = string_compose (X_("VST:%1:%2"), unique_id (), _presets.size() + 1);
+
+	char tmp[32];
+	snprintf (tmp, 31, "%ld", _presets.size() + 1);
+	tmp[31] = 0;
+
+	char hash[41];
+	Sha1Digest s;
+	sha1_init (&s);
+	sha1_write (&s, (const uint8_t *) name.c_str(), name.size ());
+	sha1_write (&s, (const uint8_t *) tmp, strlen(tmp));
+	sha1_result_hash (&s, hash);
+
+	string const uri = string_compose (X_("VST:%1:x%2"), unique_id (), hash);
 
 	if (_plugin->flags & 32 /* effFlagsProgramsChunks */) {
 
@@ -522,6 +601,11 @@ string
 VSTPlugin::describe_parameter (Evoral::Parameter param)
 {
 	char name[64];
+	if (param.id() == UINT32_MAX - 1) {
+		strcpy (name, _("Plugin Enable"));
+		return name;
+	}
+
 	memset (name, 0, sizeof (name));
 
 	/* some VST plugins expect this buffer to be zero-filled */

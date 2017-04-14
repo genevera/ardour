@@ -17,7 +17,6 @@
 */
 
 #include <gtkmm/stock.h>
-#include <gtkmm/colorselection.h>
 
 #include "pbd/convert.h"
 
@@ -95,6 +94,7 @@ VCAMasterStrip::VCAMasterStrip (Session* s, boost::shared_ptr<VCA> v)
 	number_label.set_alignment (.5, .5);
 	number_label.set_fallthrough_to_parent (true);
 	number_label.set_inactive_color (_vca->presentation_info().color ());
+	number_label.signal_button_release_event().connect (sigc::mem_fun (*this, &VCAMasterStrip::number_button_press));
 
 	update_bottom_padding ();
 
@@ -108,7 +108,7 @@ VCAMasterStrip::VCAMasterStrip (Session* s, boost::shared_ptr<VCA> v)
 	vertical_button.set_active_color (_vca->presentation_info().color ());
 	set_tooltip (vertical_button, _("Click to show slaves only")); /* tooltip updated dynamically */
 
-	global_vpacker.set_border_width (1);
+	global_vpacker.set_border_width (0);
 	global_vpacker.set_spacing (2);
 	gain_meter.set_spacing(4);
 
@@ -147,7 +147,7 @@ VCAMasterStrip::VCAMasterStrip (Session* s, boost::shared_ptr<VCA> v)
 	mute_changed ();
 	spill_change (boost::shared_ptr<VCA>());
 
-	Mixer_UI::instance()->show_vca_change.connect (sigc::mem_fun (*this, &VCAMasterStrip::spill_change));
+	Mixer_UI::instance()->show_spill_change.connect (sigc::mem_fun (*this, &VCAMasterStrip::spill_change));
 
 	_vca->PropertyChanged.connect (vca_connections, invalidator (*this), boost::bind (&VCAMasterStrip::vca_property_changed, this, _1), gui_context());
 	_vca->presentation_info().PropertyChanged.connect (vca_connections, invalidator (*this), boost::bind (&VCAMasterStrip::vca_property_changed, this, _1), gui_context());
@@ -164,9 +164,9 @@ VCAMasterStrip::VCAMasterStrip (Session* s, boost::shared_ptr<VCA> v)
 
 VCAMasterStrip::~VCAMasterStrip ()
 {
-	if ((_session && !_session->deletion_in_progress()) && Mixer_UI::instance()->showing_vca_slaves_for (_vca)) {
+	if ((_session && !_session->deletion_in_progress()) && Mixer_UI::instance()->showing_spill_for (_vca)) {
 		/* cancel spill for this VCA */
-		Mixer_UI::instance()->show_vca_slaves (boost::shared_ptr<VCA>());
+		Mixer_UI::instance()->show_spill (boost::shared_ptr<Stripable>());
 	}
 
 	delete delete_dialog;
@@ -178,9 +178,9 @@ VCAMasterStrip::~VCAMasterStrip ()
 void
 VCAMasterStrip::self_delete ()
 {
-	if ((_session && !_session->deletion_in_progress()) && Mixer_UI::instance()->showing_vca_slaves_for (_vca)) {
+	if ((_session && !_session->deletion_in_progress()) && Mixer_UI::instance()->showing_spill_for (_vca)) {
 		/* cancel spill for this VCA */
-		Mixer_UI::instance()->show_vca_slaves (boost::shared_ptr<VCA>());
+		Mixer_UI::instance()->show_spill (boost::shared_ptr<Stripable>());
 	}
 	/* Drop reference immediately, delete self when idle */
 	_vca.reset ();
@@ -231,7 +231,7 @@ VCAMasterStrip::update_bottom_padding ()
 	comment_button.set_name ("generic button");
 
 
-	int h = 0;
+	int h = 1;
 	if (1) {
 		Gtk::Window window (WINDOW_TOPLEVEL);
 		window.add (meter_point_button);
@@ -388,6 +388,18 @@ VCAMasterStrip::vertical_button_press (GdkEventButton* ev)
 	return true;
 }
 
+bool
+VCAMasterStrip::number_button_press (GdkEventButton* ev)
+{
+	if (Keyboard::is_context_menu_event (ev)) {
+		if (!context_menu) {
+			build_context_menu ();
+		}
+		context_menu->popup (1, ev->time);
+	}
+	return true;
+}
+
 void
 VCAMasterStrip::start_name_edit ()
 {
@@ -424,7 +436,7 @@ void
 VCAMasterStrip::update_vca_name ()
 {
 	/* 20 is a rough guess at the number of letters we can fit. */
-	vertical_button.set_text (short_version (_vca->name(), 20));
+	vertical_button.set_text (short_version (_vca->full_name(), 20));
 }
 
 void
@@ -436,6 +448,9 @@ VCAMasterStrip::build_context_menu ()
 	items.push_back (MenuElem (_("Rename"), sigc::mem_fun (*this, &VCAMasterStrip::start_name_edit)));
 	items.push_back (MenuElem (_("Color..."), sigc::mem_fun (*this, &VCAMasterStrip::start_color_edit)));
 	items.push_back (SeparatorElem());
+	items.push_back (MenuElem (_("Assign Selected Channels"), sigc::mem_fun (*this, &VCAMasterStrip::assign_all_selected)));
+	items.push_back (MenuElem (_("Drop Selected Channels"), sigc::mem_fun (*this, &VCAMasterStrip::unassign_all_selected)));
+	items.push_back (SeparatorElem());
 	items.push_back (MenuElem (_("Drop All Slaves"), sigc::mem_fun (*this, &VCAMasterStrip::drop_all_slaves)));
 	items.push_back (SeparatorElem());
 	items.push_back (MenuElem (_("Remove"), sigc::mem_fun (*this, &VCAMasterStrip::remove)));
@@ -444,15 +459,15 @@ VCAMasterStrip::build_context_menu ()
 void
 VCAMasterStrip::spill ()
 {
-	if (Mixer_UI::instance()->showing_vca_slaves_for (_vca)) {
-		Mixer_UI::instance()->show_vca_slaves (boost::shared_ptr<VCA>());
+	if (Mixer_UI::instance()->showing_spill_for (_vca)) {
+		Mixer_UI::instance()->show_spill (boost::shared_ptr<Stripable>());
 	} else {
-		Mixer_UI::instance()->show_vca_slaves (_vca);
+		Mixer_UI::instance()->show_spill (_vca);
 	}
 }
 
 void
-VCAMasterStrip::spill_change (boost::shared_ptr<VCA> vca)
+VCAMasterStrip::spill_change (boost::shared_ptr<Stripable> vca)
 {
 	if (vca != _vca) {
 		vertical_button.set_active_state (Gtkmm2ext::Off);
@@ -474,12 +489,24 @@ VCAMasterStrip::remove ()
 }
 
 void
+VCAMasterStrip::assign_all_selected ()
+{
+	Mixer_UI::instance()->do_vca_assign (_vca);
+}
+
+void
+VCAMasterStrip::unassign_all_selected ()
+{
+	Mixer_UI::instance()->do_vca_unassign (_vca);
+}
+
+void
 VCAMasterStrip::drop_all_slaves ()
 {
 	_vca->Drop (); /* EMIT SIGNAL */
 
-	if (Mixer_UI::instance()->showing_vca_slaves_for (_vca)) {
-		Mixer_UI::instance()->show_vca_slaves (boost::shared_ptr<VCA>());
+	if (Mixer_UI::instance()->showing_spill_for (_vca)) {
+		Mixer_UI::instance()->show_spill (boost::shared_ptr<Stripable>());
 	}
 }
 
@@ -498,30 +525,7 @@ VCAMasterStrip::state_id () const
 void
 VCAMasterStrip::start_color_edit ()
 {
-	Gtk::ColorSelectionDialog* color_dialog = new Gtk::ColorSelectionDialog;
-
-	color_dialog->get_colorsel()->set_has_opacity_control (false);
-	color_dialog->get_colorsel()->set_has_palette (true);
-
-	Gdk::Color c = gdk_color_from_rgba (_vca->presentation_info().color ());
-
-	color_dialog->get_colorsel()->set_previous_color (c);
-	color_dialog->get_colorsel()->set_current_color (c);
-
-	color_dialog->signal_response().connect (sigc::bind (sigc::mem_fun (*this, &VCAMasterStrip::finish_color_edit), color_dialog));
-	color_dialog->present ();
-}
-
-void
-VCAMasterStrip::finish_color_edit (int response, Gtk::ColorSelectionDialog* dialog)
-{
-	switch (response) {
-	case RESPONSE_OK:
-		_vca->presentation_info().set_color (gdk_color_to_rgba (dialog->get_colorsel()->get_current_color()));
-		break;
-	}
-
-	delete_when_idle (dialog);
+	_color_picker.popup (_vca);
 }
 
 bool

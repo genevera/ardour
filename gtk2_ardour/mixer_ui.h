@@ -86,7 +86,6 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 	void show_window ();
 
 	void set_session (ARDOUR::Session *);
-	void track_editor_selection ();
 
 	PluginSelector* plugin_selector();
 
@@ -112,16 +111,17 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 	void select_strip (MixerStrip&, bool add=false);
 	void select_none ();
 
-	bool window_not_visible () const;
-
 	void do_vca_assign (boost::shared_ptr<ARDOUR::VCA>);
 	void do_vca_unassign (boost::shared_ptr<ARDOUR::VCA>);
-	void show_vca_slaves (boost::shared_ptr<ARDOUR::VCA>);
-	bool showing_vca_slaves_for (boost::shared_ptr<ARDOUR::VCA>) const;
+	void show_spill (boost::shared_ptr<ARDOUR::Stripable>);
+	bool showing_spill_for (boost::shared_ptr<ARDOUR::Stripable>) const;
 
-	sigc::signal1<void,boost::shared_ptr<ARDOUR::VCA> > show_vca_change;
+	sigc::signal1<void,boost::shared_ptr<ARDOUR::Stripable> > show_spill_change;
 
 	RouteProcessorSelection& selection() { return _selection; }
+
+	void show_editor_window () const;
+
 	void register_actions ();
 
         void load_bindings ();
@@ -187,6 +187,7 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 	void remove_master (VCAMasterStrip*);
 
 	MixerStrip* strip_by_route (boost::shared_ptr<ARDOUR::Route>) const;
+	MixerStrip* strip_by_stripable (boost::shared_ptr<ARDOUR::Stripable>) const;
 	AxisView* axis_by_stripable (boost::shared_ptr<ARDOUR::Stripable>) const;
 
 	void hide_all_strips (bool with_select);
@@ -238,7 +239,6 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 	ARDOUR::PluginPresetPtr selected_plugin ();
 
 	void initial_track_display ();
-	void show_track_list_menu ();
 
 	void set_all_strips_visibility (bool yn);
 	void set_all_audio_midi_visibility (int, bool);
@@ -336,8 +336,9 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 
 	Width _strip_width;
 
+	void presentation_info_changed (PBD::PropertyChange const &);
+	void sync_treeview_from_presentation_info (PBD::PropertyChange const &);
 	void sync_presentation_info_from_treeview ();
-	void sync_treeview_from_presentation_info ();
 
 	bool ignore_reorder;
 
@@ -361,9 +362,6 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 
 	friend class MixerGroupTabs;
 
-	void follow_editor_selection ();
-	bool _following_editor_selection;
-
 	void monitor_section_going_away ();
 
 	void monitor_section_attached ();
@@ -382,7 +380,7 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 	// true if mixer list is visible
 	bool _show_mixer_list;
 
-	mutable boost::weak_ptr<ARDOUR::VCA> spilled_vca;
+	mutable boost::weak_ptr<ARDOUR::Stripable> spilled_strip;
 
 	void escape ();
 

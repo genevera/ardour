@@ -122,6 +122,7 @@ ARDOUR::LuaAPI::new_plugin_info (const string& name, ARDOUR::PluginType type)
 #ifdef LV2_SUPPORT
 	all_plugs.insert (all_plugs.end (), manager.lv2_plugin_info ().begin (), manager.lv2_plugin_info ().end ());
 #endif
+	all_plugs.insert (all_plugs.end (), manager.lua_plugin_info ().begin (), manager.lua_plugin_info ().end ());
 
 	for (PluginInfoList::const_iterator i = all_plugs.begin (); i != all_plugs.end (); ++i) {
 		if (((*i)->name == name || (*i)->unique_id == name) && (*i)->type == type) {
@@ -205,6 +206,17 @@ ARDOUR::LuaAPI::get_processor_param (boost::shared_ptr<Processor> proc, uint32_t
 	boost::shared_ptr<PluginInsert> pi = boost::dynamic_pointer_cast<PluginInsert> (proc);
 	if (!pi) { return false; }
 	return get_plugin_insert_param (pi, which, ok);
+}
+
+bool
+ARDOUR::LuaAPI::reset_processor_to_default ( boost::shared_ptr<Processor> proc )
+{
+	boost::shared_ptr<PluginInsert> pi = boost::dynamic_pointer_cast<PluginInsert> (proc);
+	if (pi) {
+		pi->reset_parameters_to_default();
+		return true;
+	}
+	return false;
 }
 
 int
@@ -488,6 +500,32 @@ ARDOUR::LuaAPI::hsla_to_rgba (lua_State *L)
 	luabridge::Stack<double>::push (L, g);
 	luabridge::Stack<double>::push (L, b);
 	luabridge::Stack<double>::push (L, a);
+	return 4;
+}
+
+int
+ARDOUR::LuaAPI::color_to_rgba (lua_State *L)
+{
+	int top = lua_gettop (L);
+	if (top < 1) {
+		return luaL_argerror (L, 1, "invalid number of arguments, color_to_rgba (uint32_t)");
+	}
+	uint32_t color = luabridge::Stack<uint32_t>::get (L, 1);
+	double r, g, b, a;
+
+	/* libardour is no user of libcanvas, otherwise
+	 * we could just call
+	 * ArdourCanvas::color_to_rgba (color, r, g, b, a);
+	 */
+	r = ((color >> 24) & 0xff) / 255.0;
+	g = ((color >> 16) & 0xff) / 255.0;
+	b = ((color >>  8) & 0xff) / 255.0;
+	a = ((color >>  0) & 0xff) / 255.0;
+
+	luabridge::Stack <double>::push (L, r);
+	luabridge::Stack <double>::push (L, g);
+	luabridge::Stack <double>::push (L, b);
+	luabridge::Stack <double>::push (L, a);
 	return 4;
 }
 
@@ -781,4 +819,18 @@ boost::shared_ptr<Evoral::Note<Evoral::Beats> >
 LuaAPI::new_noteptr (uint8_t chan, Evoral::Beats beat_time, Evoral::Beats length, uint8_t note, uint8_t velocity)
 {
 	return boost::shared_ptr<Evoral::Note<Evoral::Beats> > (new Evoral::Note<Evoral::Beats>(chan, beat_time, length, note, velocity));
+}
+
+std::list<boost::shared_ptr<Evoral::Note<Evoral::Beats> > >
+LuaAPI::note_list (boost::shared_ptr<MidiModel> mm)
+{
+	typedef boost::shared_ptr<Evoral::Note<Evoral::Beats> > NotePtr;
+
+	std::list<NotePtr> note_ptr_list;
+
+	const MidiModel::Notes& notes = mm->notes();
+	for (MidiModel::Notes::const_iterator i = notes.begin(); i != notes.end(); ++i) {
+		note_ptr_list.push_back (*i);
+	}
+	return note_ptr_list;
 }

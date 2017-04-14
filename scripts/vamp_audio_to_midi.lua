@@ -1,5 +1,17 @@
-ardour { ["type"] = "EditorAction", name = "Vamp Audio to MIDI",
-description = "analyze audio from selected audio region to selected midi region" }
+ardour {
+	["type"] = "EditorAction",
+	name = "Polyphonic Audio to MIDI",
+	license     = "MIT",
+	author      = "Ardour Team",
+description = [[
+Analyze audio from the selected audio region to a selected MIDI region.
+
+A MIDI region on the target track will have to be created first (use the pen tool).
+
+This script uses the Polyphonic Transcription VAMP plugin from Queen Mary Univ, London.
+The plugin works best at 44.1KHz input sample rate, and is tuned for piano and guitar music. Velocity is not estimated.
+]]
+}
 
 function factory () return function ()
 	local sel = Editor:get_selection ()
@@ -21,7 +33,7 @@ function factory () return function ()
 			if et > end_time then
 				end_time = et
 			end
-			table.insert(audio_regions, r) 
+			table.insert(audio_regions, r)
 		else
 			midi_region = r:to_midiregion()
 		end
@@ -55,4 +67,13 @@ function factory () return function ()
 			mm:apply_command (Session, midi_command)
 		end
 	end
+end end
+
+function icon (params) return function (ctx, width, height, fg)
+	local txt = Cairo.PangoLayout (ctx, "ArdourMono ".. math.ceil(width * .7) .. "px")
+	txt:set_text ("\u{2669}") -- quarter note symbol UTF8
+	local tw, th = txt:get_pixel_size ()
+	ctx:set_source_rgba (ARDOUR.LuaAPI.color_to_rgba (fg))
+	ctx:move_to (.5 * (width - tw), .5 * (height - th))
+	txt:show_in_cairo_context (ctx)
 end end

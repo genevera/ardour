@@ -34,8 +34,9 @@
 
 #include "pbd/signals.h"
 
-#include "canvas/visibility.h"
+#include "gtkmm2ext/cairo_canvas.h"
 
+#include "canvas/visibility.h"
 #include "canvas/root_group.h"
 
 namespace Gtk {
@@ -95,11 +96,11 @@ public:
         ArdourCanvas::Color background_color() const { return _bg_color; }
 
 	/** Called when an item is being destroyed */
-	virtual void item_going_away (Item *, boost::optional<Rect>) {}
+	virtual void item_going_away (Item *, Rect) {}
 	void item_shown_or_hidden (Item *);
         void item_visual_property_changed (Item*);
-	void item_changed (Item *, boost::optional<Rect>);
-	void item_moved (Item *, boost::optional<Rect>);
+	void item_changed (Item *, Rect);
+	void item_moved (Item *, Rect);
 
         Duple canvas_to_window (Duple const&, bool rounded = true) const;
         Duple window_to_canvas (Duple const&) const;
@@ -174,11 +175,13 @@ public:
 };
 
 /** A canvas which renders onto a GTK EventBox */
-class LIBCANVAS_API GtkCanvas : public Canvas, public Gtk::EventBox
+class LIBCANVAS_API GtkCanvas : public Canvas, public Gtk::EventBox, public Gtkmm2ext::CairoCanvas
 {
 public:
 	GtkCanvas ();
 	~GtkCanvas () { _in_dtor = true ; }
+
+	void use_nsglview ();
 
 	void request_redraw (Rect const &);
 	void request_size (Duple);
@@ -203,6 +206,14 @@ public:
 
 	Glib::RefPtr<Pango::Context> get_pango_context();
 
+	void render (Cairo::RefPtr<Cairo::Context> const & ctx, cairo_rectangle_t* r)
+	{
+		ArdourCanvas::Rect rect (r->x, r->y, r->width + r->x, r->height + r->y);
+		Canvas::render (rect, ctx);
+	}
+
+	uint32_t background_color() { return Canvas::background_color (); }
+
   protected:
 	void on_size_allocate (Gtk::Allocation&);
 	bool on_scroll_event (GdkEventScroll *);
@@ -212,8 +223,12 @@ public:
 	bool on_button_press_event (GdkEventButton *);
 	bool on_button_release_event (GdkEventButton* event);
 	bool on_motion_notify_event (GdkEventMotion *);
-        bool on_enter_notify_event (GdkEventCrossing*);
-        bool on_leave_notify_event (GdkEventCrossing*);
+	bool on_enter_notify_event (GdkEventCrossing*);
+	bool on_leave_notify_event (GdkEventCrossing*);
+	void on_map();
+	void on_unmap();
+
+	void on_realize ();
 
 	bool button_handler (GdkEventButton *);
 	bool motion_notify_handler (GdkEventMotion *);
@@ -224,7 +239,7 @@ public:
         void pick_current_item (Duple const &, int state);
 
 private:
-	void item_going_away (Item *, boost::optional<Rect>);
+	void item_going_away (Item *, Rect);
 	bool send_leave_event (Item const *, double, double) const;
 
 	Cairo::RefPtr<Cairo::Surface> canvas_image;
@@ -249,6 +264,8 @@ private:
 	bool really_start_tooltip_timeout ();
 
 	bool _in_dtor;
+
+	void* _nsglview;
 };
 
 /** A GTK::Alignment with a GtkCanvas inside it plus some Gtk::Adjustments for

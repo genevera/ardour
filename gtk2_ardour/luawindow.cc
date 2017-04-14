@@ -159,6 +159,7 @@ LuaWindow::LuaWindow ()
 	Gtkmm2ext::VPane *vpane = manage (new Gtkmm2ext::VPane ());
 	vpane->add (*vbox);
 	vpane->add (scrollout);
+	vpane->set_divider (0, 0.75);
 
 	vpane->show_all ();
 	add (*vpane);
@@ -320,6 +321,17 @@ LuaWindow::clear_output ()
 {
 	Glib::RefPtr<Gtk::TextBuffer> tb (outtext.get_buffer());
 	tb->set_text ("");
+}
+
+void
+LuaWindow::edit_script (const std::string& name, const std::string& script)
+{
+	ScriptBuffer* sb = new LuaWindow::ScriptBuffer (name);
+	sb->script = script;
+	script_buffers.push_back (ScriptBufferPtr (sb));
+	script_selection_changed (script_buffers.back ());
+	refresh_scriptlist ();
+	show_window ();
 }
 
 void

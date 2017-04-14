@@ -40,6 +40,7 @@
 #include "automation_time_axis.h"
 #include "public_editor.h"
 #include "control_point.h"
+#include "vca_time_axis.h"
 
 #include "pbd/i18n.h"
 
@@ -57,7 +58,6 @@ Selection::Selection (const PublicEditor* e)
 	: tracks (e)
 	, editor (e)
 	, next_time_id (0)
-	, _no_tracks_changed (false)
 {
 	clear ();
 
@@ -132,13 +132,13 @@ void
 Selection::clear_tracks (bool with_signal)
 {
 	if (!tracks.empty()) {
+		PresentationInfo::ChangeSuspender cs;
+
 		for (TrackViewList::iterator x = tracks.begin(); x != tracks.end(); ++x) {
 			(*x)->set_selected (false);
 		}
+
 		tracks.clear ();
-		if (!_no_tracks_changed && with_signal) {
-			TracksChanged();
-		}
 	}
 }
 
@@ -272,7 +272,12 @@ Selection::toggle (boost::shared_ptr<Playlist> pl)
 void
 Selection::toggle (const TrackViewList& track_list)
 {
+	PresentationInfo::ChangeSuspender cs;
+
 	for (TrackViewList::const_iterator i = track_list.begin(); i != track_list.end(); ++i) {
+		if (dynamic_cast<VCATimeAxisView*> (*i)) {
+			continue;
+		}
 		toggle ((*i));
 	}
 }
@@ -280,19 +285,20 @@ Selection::toggle (const TrackViewList& track_list)
 void
 Selection::toggle (TimeAxisView* track)
 {
+	if (dynamic_cast<VCATimeAxisView*> (track)) {
+		return;
+	}
+
 	TrackSelection::iterator i;
 
 	if ((i = find (tracks.begin(), tracks.end(), track)) == tracks.end()) {
-		track->set_selected (true);
 		tracks.push_back (track);
+		track->set_selected (true);
 	} else {
-		track->set_selected (false);
 		tracks.erase (i);
+		track->set_selected (false);
 	}
 
-	if (!_no_tracks_changed) {
-		TracksChanged();
-	}
 }
 
 void
@@ -429,18 +435,20 @@ Selection::add (const list<boost::shared_ptr<Playlist> >& pllist)
 }
 
 void
-Selection::add (const TrackViewList& track_list)
+Selection::add (TrackViewList const & track_list)
 {
 	clear_objects();  //enforce object/range exclusivity
+
+	PresentationInfo::ChangeSuspender cs;
 
 	TrackViewList added = tracks.add (track_list);
 
 	if (!added.empty()) {
 		for (TrackViewList::iterator x = added.begin(); x != added.end(); ++x) {
+			if (dynamic_cast<VCATimeAxisView*> (*x)) {
+				continue;
+			}
 			(*x)->set_selected (true);
-		}
-		if (!_no_tracks_changed) {
-			TracksChanged ();
 		}
 	}
 }
@@ -448,10 +456,11 @@ Selection::add (const TrackViewList& track_list)
 void
 Selection::add (TimeAxisView* track)
 {
-	clear_objects();  //enforce object/range exclusivity
+	if (dynamic_cast<VCATimeAxisView*> (track)) {
+		return;
+	}
 
 	TrackViewList tr;
-	track->set_selected (true);
 	tr.push_back (track);
 	add (tr);
 }
@@ -637,33 +646,29 @@ Selection::remove (TimeAxisView* track)
 {
 	list<TimeAxisView*>::iterator i;
 	if ((i = find (tracks.begin(), tracks.end(), track)) != tracks.end()) {
-		track->set_selected (false);
-		tracks.erase (i);
+		/* erase first, because set_selected() will remove the track
+		   from the selection, invalidating the iterator.
 
-		if (!_no_tracks_changed) {
-			TracksChanged();
-		}
+		   In fact, we don't really even need to do the erase, but this is
+		   a hangover of axis view selection being in the GUI.
+		*/
+		tracks.erase (i);
+		track->set_selected (false);
 	}
 }
 
 void
 Selection::remove (const TrackViewList& track_list)
 {
-	bool changed = false;
+	PresentationInfo::ChangeSuspender cs;
 
 	for (TrackViewList::const_iterator i = track_list.begin(); i != track_list.end(); ++i) {
 
 		TrackViewList::iterator x = find (tracks.begin(), tracks.end(), *i);
-		if (x != tracks.end()) {
-			(*i)->set_selected (false);
-			tracks.erase (x);
-			changed = true;
-		}
-	}
 
-	if (changed) {
-		if (!_no_tracks_changed) {
-			TracksChanged();
+		if (x != tracks.end()) {
+			tracks.erase (x);
+			(*i)->set_selected (false);
 		}
 	}
 }
@@ -796,8 +801,27 @@ Selection::remove (boost::shared_ptr<ARDOUR::AutomationList> ac)
 void
 Selection::set (TimeAxisView* track)
 {
+	if (dynamic_cast<VCATimeAxisView*> (track)) {
+		return;
+	}
 	clear_objects ();  //enforce object/range exclusivity
-	clear_tracks (false);
+
+	PresentationInfo::ChangeSuspender cs;
+
+	if (!tracks.empty()) {
+
+		if (tracks.size() == 1 && tracks.front() == track) {
+			/* already single selection: nothing to do */
+			return;
+		}
+
+		for (TrackViewList::iterator x = tracks.begin(); x != tracks.end(); ++x) {
+			(*x)->set_selected (false);
+		}
+
+		tracks.clear ();
+	}
+
 	add (track);
 }
 
@@ -805,8 +829,30 @@ void
 Selection::set (const TrackViewList& track_list)
 {
 	clear_objects();  //enforce object/range exclusivity
-	clear_tracks (false);
-	add (track_list);
+
+
+	TrackViewList to_be_added;
+	TrackViewList to_be_removed;
+
+	for (TrackViewList::const_iterator x = tracks.begin(); x != tracks.end(); ++x) {
+		if (find (track_list.begin(), track_list.end(), *x) == track_list.end()) {
+			to_be_removed.push_back (*x);
+		}
+	}
+
+	for (TrackViewList::const_iterator x = track_list.begin(); x != track_list.end(); ++x) {
+		if (dynamic_cast<VCATimeAxisView*> (*x)) {
+			continue;
+		}
+		if (find (tracks.begin(), tracks.end(), *x) == tracks.end()) {
+			to_be_added.push_back (*x);
+		}
+	}
+
+	PresentationInfo::ChangeSuspender cs;
+	remove (to_be_removed);
+	add (to_be_added);
+
 }
 
 void
@@ -946,25 +992,25 @@ Selection::set (boost::shared_ptr<Evoral::ControlList> ac)
 }
 
 bool
-Selection::selected (ArdourMarker* m)
+Selection::selected (ArdourMarker* m) const
 {
 	return find (markers.begin(), markers.end(), m) != markers.end();
 }
 
 bool
-Selection::selected (TimeAxisView* tv)
+Selection::selected (TimeAxisView* tv) const
 {
 	return tv->selected ();
 }
 
 bool
-Selection::selected (RegionView* rv)
+Selection::selected (RegionView* rv) const
 {
 	return find (regions.begin(), regions.end(), rv) != regions.end();
 }
 
 bool
-Selection::selected (ControlPoint* cp)
+Selection::selected (ControlPoint* cp) const
 {
 	return find (points.begin(), points.end(), cp) != points.end();
 }
@@ -1550,10 +1596,4 @@ Selection::remove_regions (TimeAxisView* t)
 
 		i = tmp;
 	}
-}
-
-void
-Selection::block_tracks_changed (bool yn)
-{
-	_no_tracks_changed = yn;
 }

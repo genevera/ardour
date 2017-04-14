@@ -122,6 +122,7 @@ gtk2_ardour_sources = [
         'group_tabs.cc',
         'gtk_pianokeyboard.c',
         'gui_object.cc',
+        'idleometer.cc',
         'insert_remove_time_dialog.cc',
         'instrument_selector.cc',
         'interthread_progress_window.cc',
@@ -243,12 +244,12 @@ gtk2_ardour_sources = [
         'stereo_panner_editor.cc',
         'streamview.cc',
         'strip_silence_dialog.cc',
+        'stripable_colorpicker.cc',
         'sys_ex.cc',
         'tape_region_view.cc',
         'tempo_curve.cc',
         'tempo_dialog.cc',
         'tempo_lines.cc',
-        'theme_manager.cc',
         'time_axis_view.cc',
         'time_axis_view_item.cc',
         'time_fx_dialog.cc',
@@ -321,9 +322,23 @@ def enoify (major, minor):
         elif minor == 5:
             return "\\n\\\"The Plateaux of Mirror\\\""
         elif minor == 6:
-            return "\\n\\\"Possible Musics\\\""
+            return "\\n\\\"Possible Musics\\\"" # 1980 Collaborative
         elif minor == 7:
-            return "\\n\\\"My Life in the Bush of Ghosts\\\""
+            return "\\n\\\"My Life in the Bush of Ghosts\\\"" # 1981
+        elif minor == 8:
+            return "\\n\\\"Music for Airplay\\\"" # 1981 Compilation
+        elif minor == 9:
+            return "\\n\\\"On Land\\\"" # 1982
+        elif minor == 10:  # 6.0 ??
+            return "\\n\\\"Atmospheres and Soundtracks\\\"" # 1983
+        elif minor == 11:
+            return "\\n\\\"More Music for Films\\\"" # 1983
+        elif minor == 12:
+            return "\\n\\\"Working Backwards\\\"" # 1984 Compilation
+        elif minor == 13:
+            return "\\n\\\"The Pearl\\\"" # 1984 Collaborative
+        elif minor == 14:
+            return "\\n\\\"Begegnungen\\\"" # 1984 Compilation
     return "\\\"\\\""
 
 def options(opt):
@@ -519,7 +534,8 @@ def build(bld):
                 ]
         obj.linkflags = ''
         obj.uselib    = 'UUID FLAC FONTCONFIG GLIBMM GTHREAD GTK OGG CURL DL GTKMM CANVAS FFTW3F LO TAGLIB XML '
-        obj.source += [ 'canvas_test.cc', ]
+        # obj.source += [ 'canvas_test.cc', ]
+        obj.source += [ 'toolbar_test.cc', 'enums.cc']
 
 
     if bld.is_defined('WINDOWS_VST_SUPPORT') and bld.env['build_target'] != 'mingw':
@@ -855,7 +871,7 @@ def build(bld):
     bld.install_files(bld.env['DATADIR'], 'ArdourMono.ttf')
 
     # Application/Product specific resources (icon, splash)
-    pgmname = Options.options.program_name;
+    pgmname = bld.env['PROGRAM_NAME']
     bld.install_files(os.path.join(bld.env['DATADIR'], 'resources'), bld.path.ant_glob('resources/' + pgmname + '*'))
 
     if bld.env['build_target'] == 'mingw':
@@ -868,7 +884,7 @@ def build(bld):
     bld.install_files(bld.env['CONFDIR'], 'default_ui_config')
     # Color Themes. Find each color file for this program only
     # and install
-    bld.install_files (os.path.join(bld.env['DATADIR'], 'themes'), bld.path.ant_glob ('themes/*-' + Options.options.program_name.lower() + '.colors'));
+    bld.install_files (os.path.join(bld.env['DATADIR'], 'themes'), bld.path.ant_glob ('themes/*-' + pgmname.lower() + '.colors'));
 
     # Default export stuff
     bld.install_files(os.path.join(bld.env['CONFDIR'], 'export'), bld.path.ant_glob('export/*.format'))

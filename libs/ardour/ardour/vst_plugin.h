@@ -40,6 +40,7 @@ class PluginInsert;
 class LIBARDOUR_API VSTPlugin : public Plugin
 {
 public:
+	friend class Session;
 	VSTPlugin (AudioEngine &, Session &, VSTHandle *);
 	VSTPlugin (const VSTPlugin& other);
 	virtual ~VSTPlugin ();
@@ -61,11 +62,14 @@ public:
 	std::set<Evoral::Parameter> automatable() const;
 
 	PBD::Signal0<void> LoadPresetProgram;
+	PBD::Signal0<void> VSTSizeWindow;
 
 	bool parameter_is_audio (uint32_t) const { return false; }
 	bool parameter_is_control (uint32_t) const { return true; }
 	bool parameter_is_input (uint32_t) const { return true; }
 	bool parameter_is_output (uint32_t) const { return false; }
+
+	uint32_t designated_bypass_port ();
 
 	int connect_and_run (BufferSet&,
 			framepos_t start, framepos_t end, double speed,
@@ -99,7 +103,9 @@ public:
 
 
 protected:
-	void set_plugin (AEffect *);
+	void parameter_changed_externally (uint32_t which, float val);
+	virtual void open_plugin ();
+	void init_plugin ();
 	gchar* get_chunk (bool) const;
 	int set_chunk (gchar const *, bool);
 	void add_state (XMLNode *) const;
@@ -123,6 +129,7 @@ protected:
 	framepos_t _transport_frame;
 	float      _transport_speed;
 	mutable std::map <uint32_t, float> _parameter_defaults;
+	bool       _eff_bypassed;
 };
 
 }

@@ -44,7 +44,6 @@
 #define BASELINESTRETCH (1.25)
 #define TRACKHEADERBTNW (3.10)
 
-using namespace Gdk;
 using namespace Gtk;
 using namespace Glib;
 using namespace PBD;
@@ -62,6 +61,8 @@ ArdourButton::ArdourButton (Element e)
 	, _markup (false)
 	, _elements (e)
 	, _icon (Gtkmm2ext::ArdourIcon::NoIcon)
+	, _icon_render_cb (0)
+	, _icon_render_cb_data (0)
 	, _tweaks (Tweaks (0))
 	, _char_pixel_width (0)
 	, _char_pixel_height (0)
@@ -254,8 +255,10 @@ ArdourButton::set_alignment (const float xa, const float ya)
  * ARDOUR_UI_UTILS::render_vector_icon()
  */
 void
-ArdourButton::render (cairo_t* cr, cairo_rectangle_t *)
+ArdourButton::render (Cairo::RefPtr<Cairo::Context> const& ctx, cairo_rectangle_t*)
 {
+	cairo_t* cr = ctx->cobj();
+
 	uint32_t text_color;
 	uint32_t led_color;
 
@@ -368,14 +371,22 @@ ArdourButton::render (cairo_t* cr, cairo_rectangle_t *)
 		gdk_cairo_set_source_pixbuf (cr, _pixbuf->gobj(), x, y);
 		cairo_fill (cr);
 	}
-	else /* VectorIcons are exclusive to Pixbuf Icons */
-	if (_elements & VectorIcon) {
+	else /* VectorIcon, IconRenderCallback are exclusive to Pixbuf Icons */
+	if (_elements & (VectorIcon | IconRenderCallback)) {
 		int vw = get_width();
 		int vh = get_height();
 		if (_elements & Menu) {
 			vw -= _diameter + 4;
 		}
-		Gtkmm2ext::ArdourIcon::render (cr, _icon, vw, vh, active_state(), text_color);
+		if (_elements & VectorIcon) {
+			Gtkmm2ext::ArdourIcon::render (cr, _icon, vw, vh, active_state(), text_color);
+		} else {
+			cairo_save (cr);
+			rounded_function (cr, 0, 0, get_width(), get_height(), corner_radius + 1.5);
+			cairo_clip (cr);
+			_icon_render_cb (cr, vw, vh, text_color, _icon_render_cb_data);
+			cairo_restore (cr);
+		}
 	}
 
 	const int text_margin = char_pixel_width();
@@ -428,8 +439,17 @@ ArdourButton::render (cairo_t* cr, cairo_rectangle_t *)
 			ww = get_width();
 			wh = get_height();
 
-			cairo_save (cr);
-			cairo_rotate(cr, _angle * M_PI / 180.0);
+			cairo_matrix_t m1;
+			cairo_get_matrix (cr, &m1);
+			cairo_matrix_t m2 = m1;
+			m2.x0 = 0;
+			m2.y0 = 0;
+			cairo_set_matrix (cr, &m2);
+
+			if (_angle) {
+				cairo_rotate(cr, _angle * M_PI / 180.0);
+			}
+
 			cairo_device_to_user(cr, &ww, &wh);
 			xa = text_margin + (ww - _text_width - 2 * text_margin) * _xalign;
 			ya = (wh - _text_height) * _yalign;
@@ -440,10 +460,9 @@ ArdourButton::render (cairo_t* cr, cairo_rectangle_t *)
 			 */
 			if (_xalign < 0) xa = ceil(.5 + (ww * fabs(_xalign) + text_margin));
 
-			cairo_move_to (cr, xa, ya);
+			cairo_move_to (cr, xa + m1.x0, ya + m1.y0);
 			pango_cairo_update_layout(cr, _layout->gobj());
 			pango_cairo_show_layout (cr, _layout->gobj());
-			cairo_restore (cr);
 		}
 		cairo_restore (cr);
 	}
@@ -606,7 +625,7 @@ ArdourButton::on_size_request (Gtk::Requisition* req)
 			 * of text.
 			 */
 
-		} else { //if (!_text.empty() || !_sizing_text.empty()) {
+		} else /*if (!_text.empty() || !_sizing_text.empty()) */ {
 
 			req->height = std::max(req->height, (int) ceil(char_pixel_height() * BASELINESTRETCH + 1.0));
 			req->width += rint(1.75 * char_pixel_width()); // padding
@@ -653,7 +672,7 @@ ArdourButton::on_size_request (Gtk::Requisition* req)
 		req->width += _diameter + 4;
 	}
 
-	if (_elements & VectorIcon) {
+	if (_elements & (VectorIcon | IconRenderCallback)) {
 		assert(!(_elements & Text));
 		const int wh = std::max (6., std::max (rint (TRACKHEADERBTNW * char_avg_pixel_width()), ceil (char_pixel_height() * BASELINESTRETCH + 1.)));
 		req->width += wh;
@@ -1089,7 +1108,21 @@ ArdourButton::on_focus_out_event (GdkEventFocus* ev)
 
 bool
 ArdourButton::on_key_release_event (GdkEventKey *ev) {
-	if (_focused &&
+	if (_act_on_release && _focused &&
+			(ev->keyval == GDK_space || ev->keyval == GDK_Return))
+	{
+		signal_clicked();
+		if (_action) {
+			_action->activate ();
+		}
+		return true;
+	}
+	return CairoWidget::on_key_release_event (ev);
+}
+
+bool
+ArdourButton::on_key_press_event (GdkEventKey *ev) {
+	if (!_act_on_release && _focused &&
 			(ev->keyval == GDK_space || ev->keyval == GDK_Return))
 	{
 		signal_clicked();
@@ -1263,7 +1296,24 @@ void
 ArdourButton::set_icon (Gtkmm2ext::ArdourIcon::Icon i)
 {
 	_icon = i;
-	_elements = (ArdourButton::Element) ((_elements | ArdourButton::VectorIcon) & ~ArdourButton::Text);
+	_icon_render_cb = 0;
+	_icon_render_cb_data = 0;
+	_elements = (ArdourButton::Element) ((_elements | VectorIcon) & ~(ArdourButton::Text | IconRenderCallback));
+	CairoWidget::set_dirty ();
+}
+
+void
+ArdourButton::set_icon (rendercallback_t cb, void* d)
+{
+	if (!cb) {
+		_elements = (ArdourButton::Element) ((_elements | ArdourButton::Text) & ~(IconRenderCallback | VectorIcon));
+		_icon_render_cb = 0;
+		_icon_render_cb_data = 0;
+	} else {
+		_elements = (ArdourButton::Element) ((_elements | IconRenderCallback) & ~(ArdourButton::Text | VectorIcon));
+		_icon_render_cb = cb;
+		_icon_render_cb_data = d;
+	}
 	CairoWidget::set_dirty ();
 }
 

@@ -220,6 +220,10 @@ RouteTimeAxisView::set_route (boost::shared_ptr<Route> rt)
 		controls_meters_size_group->add_widget (gm.get_level_meter());
 	}
 
+	if (_route->is_master()) {
+		route_group_button.set_sensitive(false);
+	}
+
 	_route->meter_change.connect (*this, invalidator (*this), bind (&RouteTimeAxisView::meter_changed, this), gui_context());
 	_route->input()->changed.connect (*this, invalidator (*this), boost::bind (&RouteTimeAxisView::io_changed, this, _1, _2), gui_context());
 	_route->output()->changed.connect (*this, invalidator (*this), boost::bind (&RouteTimeAxisView::io_changed, this, _1, _2), gui_context());
@@ -632,21 +636,27 @@ RouteTimeAxisView::build_display_menu ()
 
 		int overlaid = 0;
 		int stacked = 0;
+		int unchangeable = 0;
 		TrackSelection const & s = _editor.get_selection().tracks;
+
 		for (TrackSelection::const_iterator i = s.begin(); i != s.end(); ++i) {
 			StreamView* v = (*i)->view ();
 			if (!v) {
 				continue;
 			}
 
-			switch (v->layer_display ()) {
-			case Overlaid:
-				++overlaid;
-				break;
-			case Stacked:
-			case Expanded:
-				++stacked;
-				break;
+			if (v->can_change_layer_display()) {
+				switch (v->layer_display ()) {
+				case Overlaid:
+					++overlaid;
+					break;
+				case Stacked:
+				case Expanded:
+					++stacked;
+					break;
+				}
+			} else {
+				unchangeable++;
 			}
 		}
 
@@ -664,11 +674,19 @@ RouteTimeAxisView::build_display_menu ()
 		i->set_inconsistent (overlaid != 0 && stacked != 0);
 		i->signal_activate().connect (sigc::bind (sigc::mem_fun (*this, &RouteTimeAxisView::set_layer_display), Overlaid, true));
 
+		if (unchangeable) {
+			i->set_sensitive (false);
+		}
+
 		layers_items.push_back (RadioMenuElem (layers_group, _("Stacked")));
 		i = dynamic_cast<RadioMenuItem*> (&layers_items.back ());
 		i->set_active (overlaid == 0 && stacked != 0);
 		i->set_inconsistent (overlaid != 0 && stacked != 0);
 		i->signal_activate().connect (sigc::bind (sigc::mem_fun (*this, &RouteTimeAxisView::set_layer_display), Stacked, true));
+
+		if (unchangeable) {
+			i->set_sensitive (false);
+		}
 
 		_ignore_set_layer_display = false;
 
@@ -844,24 +862,15 @@ RouteTimeAxisView::build_display_menu ()
 		r.push_back (route ());
 	}
 
-	route_group_menu->build (r);
-	items.push_back (MenuElem (_("Group"), *route_group_menu->menu ()));
+	if (!_route->is_master()) {
+		route_group_menu->build (r);
+		items.push_back (MenuElem (_("Group"), *route_group_menu->menu ()));
+	}
 
 	build_automation_action_menu (true);
 	items.push_back (MenuElem (_("Automation"), *automation_action_menu));
 
 	items.push_back (SeparatorElem());
-
-	if (is_midi_track()) {
-		Menu* midi_menu = manage (new Menu);
-		MenuList& midi_items = midi_menu->items();
-		midi_menu->set_name (X_("ArdourContextMenu"));
-
-		midi_items.push_back (MenuElem (_("Channel Management"), sigc::mem_fun (*this, &RouteTimeAxisView::toggle_channel_selector)));
-
-		items.push_back (MenuElem (_("MIDI"), *midi_menu));
-		items.push_back (SeparatorElem());
-	}
 
 	int active = 0;
 	int inactive = 0;

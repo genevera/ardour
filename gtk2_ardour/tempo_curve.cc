@@ -37,7 +37,8 @@ TempoCurve::TempoCurve (PublicEditor& ed, ArdourCanvas::Container& parent, guint
 	, _min_tempo (temp.note_types_per_minute())
 	, _max_tempo (temp.note_types_per_minute())
 	, _tempo (temp)
-
+	, _start_text (0)
+	, _end_text (0)
 {
 	frame_position = frame;
 	unit_position = editor.sample_to_pixel (frame);
@@ -55,6 +56,18 @@ TempoCurve::TempoCurve (PublicEditor& ed, ArdourCanvas::Container& parent, guint
 	points = new ArdourCanvas::Points ();
 	_curve->set (*points);
 
+	_start_text = new ArdourCanvas::Text (group);
+	_end_text = new ArdourCanvas::Text (group);
+	_start_text->set_font_description (ARDOUR_UI_UTILS::get_font_for_style (N_("MarkerText")));
+	_end_text->set_font_description (ARDOUR_UI_UTILS::get_font_for_style (N_("MarkerText")));
+	_start_text->set_color (RGBA_TO_UINT (255,255,255,255));
+	_end_text->set_color (RGBA_TO_UINT (255,255,255,255));
+	char buf[10];
+	snprintf (buf, sizeof (buf), "%.3f/%.0f", _tempo.note_types_per_minute(), _tempo.note_type());
+	_start_text->set (buf);
+	snprintf (buf, sizeof (buf), "%.3f", _tempo.end_note_types_per_minute());
+	_end_text->set (buf);
+
 	set_color_rgba (rgba);
 
 	editor.ZoomChanged.connect (sigc::mem_fun (*this, &TempoCurve::reposition));
@@ -69,7 +82,7 @@ TempoCurve::TempoCurve (PublicEditor& ed, ArdourCanvas::Container& parent, guint
 		//group->Event.connect (sigc::bind (sigc::mem_fun (editor, &PublicEditor::canvas_marker_event), group, this));
 	}
 
-	_curve->Event.connect (sigc::bind (sigc::mem_fun (editor, &PublicEditor::canvas_tempo_curve_event), _curve, this));
+	group->Event.connect (sigc::bind (sigc::mem_fun (editor, &PublicEditor::canvas_tempo_curve_event), _curve, this));
 
 }
 
@@ -120,7 +133,7 @@ TempoCurve::set_position (framepos_t frame, framepos_t end_frame)
 		points->push_back (ArdourCanvas::Duple (0.0, y_pos));
 		points->push_back (ArdourCanvas::Duple (1.0, y_pos));
 
-	} else if (_tempo.type() == ARDOUR::TempoSection::Constant || _tempo.c_func() == 0.0) {
+	} else if (_tempo.type() == ARDOUR::TempoSection::Constant || _tempo.c() == 0.0) {
 		const double tempo_at = _tempo.note_types_per_minute();
 		const double y_pos =  (curve_height) - (((tempo_at - _min_tempo) / (_max_tempo - _min_tempo)) * curve_height);
 
@@ -147,6 +160,23 @@ TempoCurve::set_position (framepos_t frame, framepos_t end_frame)
 	}
 
 	_curve->set (*points);
+
+	char buf[10];
+	snprintf (buf, sizeof (buf), "%.3f/%.0f", _tempo.note_types_per_minute(), _tempo.note_type());
+	_start_text->set (buf);
+	snprintf (buf, sizeof (buf), "%.3f", _tempo.end_note_types_per_minute());
+	_end_text->set (buf);
+
+	_start_text->set_position (ArdourCanvas::Duple (10, .5 ));
+	_end_text->set_position (ArdourCanvas::Duple (editor.sample_to_pixel (end_frame - frame) - _end_text->text_width() - 10, .5 ));
+
+	if (_end_text->text_width() + _start_text->text_width() + 20 > editor.sample_to_pixel (end_frame - frame)) {
+		_start_text->hide();
+		_end_text->hide();
+	} else {
+		_start_text->show();
+		_end_text->show();
+	}
 }
 
 void
@@ -175,7 +205,7 @@ void
 TempoCurve::set_color_rgba (uint32_t c)
 {
 	_color = c;
-	_curve->set_fill_color (UIConfiguration::instance().color_mod ("tempo curve", "selection rect"));
+	_curve->set_fill_color (UIConfiguration::instance().color_mod (_color, "selection rect"));
 	_curve->set_outline_color (_color);
 
 }

@@ -37,6 +37,7 @@
 
 #include "ardour/audioengine.h"
 #include "ardour/auditioner.h"
+#include "ardour/automation_watch.h"
 #include "ardour/butler.h"
 #include "ardour/click.h"
 #include "ardour/debug.h"
@@ -45,6 +46,7 @@
 #include "ardour/scene_changer.h"
 #include "ardour/session.h"
 #include "ardour/slave.h"
+#include "ardour/tempo.h"
 #include "ardour/operations.h"
 
 #include "pbd/i18n.h"
@@ -158,6 +160,75 @@ Session::force_locate (framepos_t target_frame, bool with_roll)
 	SessionEvent *ev = new SessionEvent (with_roll ? SessionEvent::LocateRoll : SessionEvent::Locate, SessionEvent::Add, SessionEvent::Immediate, target_frame, 0, true);
 	DEBUG_TRACE (DEBUG::Transport, string_compose ("Request forced locate to %1\n", target_frame));
 	queue_event (ev);
+}
+
+void
+Session::unset_preroll_record_punch ()
+{
+	if (_preroll_record_punch_pos >= 0) {
+		remove_event (_preroll_record_punch_pos, SessionEvent::RecordStart);
+	}
+	_preroll_record_punch_pos = -1;
+}
+
+void
+Session::unset_preroll_record_trim ()
+{
+	_preroll_record_trim_len = 0;
+}
+
+void
+Session::request_preroll_record_punch (framepos_t rec_in, framecnt_t preroll)
+{
+	if (actively_recording ()) {
+		return;
+	}
+	unset_preroll_record_punch ();
+	unset_preroll_record_trim ();
+	framepos_t start = std::max ((framepos_t)0, rec_in - preroll);
+
+	_preroll_record_punch_pos = rec_in;
+	if (_preroll_record_punch_pos >= 0) {
+		replace_event (SessionEvent::RecordStart, _preroll_record_punch_pos);
+		config.set_punch_in (false);
+		config.set_punch_out (false);
+	}
+	maybe_enable_record ();
+	request_locate (start, true);
+	set_requested_return_frame (rec_in);
+}
+
+void
+Session::request_preroll_record_trim (framepos_t rec_in, framecnt_t preroll)
+{
+	if (actively_recording ()) {
+		return;
+	}
+	unset_preroll_record_punch ();
+	unset_preroll_record_trim ();
+
+	config.set_punch_in (false);
+	config.set_punch_out (false);
+
+	framepos_t pos = std::max ((framepos_t)0, rec_in - preroll);
+	_preroll_record_trim_len = preroll;
+	maybe_enable_record ();
+	request_locate (pos, true);
+	set_requested_return_frame (rec_in);
+}
+
+void
+Session::request_count_in_record ()
+{
+	if (actively_recording ()) {
+		return;
+	}
+	if (transport_rolling()) {
+		return;
+	}
+	maybe_enable_record ();
+	_count_in_once = true;
+	request_transport_speed (1.0, true);
 }
 
 void
@@ -746,6 +817,10 @@ Session::non_realtime_stop (bool abort, int on_entry, bool& finished)
 			flush_all_inserts ();
 		}
 
+		// rg: what is the logic behind this case?
+		// _requested_return_frame should be ignored when synced_to_engine/slaved.
+		// currently worked around in MTC_Slave by forcing _requested_return_frame to -1
+		// 2016-01-10
 		if ((auto_return_enabled || synced_to_engine() || _requested_return_frame >= 0) &&
 		    !(ptw & PostTransportLocate)) {
 
@@ -785,6 +860,7 @@ Session::non_realtime_stop (bool abort, int on_entry, bool& finished)
 	}
 
 	clear_clicks();
+	unset_preroll_record_trim ();
 
 	/* do this before seeking, because otherwise the tracks will do the wrong thing in seamless loop mode.
 	*/
@@ -871,6 +947,7 @@ Session::non_realtime_stop (bool abort, int on_entry, bool& finished)
 	PositionChanged (_transport_frame); /* EMIT SIGNAL */
 	DEBUG_TRACE (DEBUG::Transport, string_compose ("send TSC with speed = %1\n", _transport_speed));
 	TransportStateChange (); /* EMIT SIGNAL */
+	AutomationWatch::instance().transport_stop_automation_watches (_transport_frame);
 
 	/* and start it up again if relevant */
 
@@ -1343,6 +1420,7 @@ Session::set_transport_speed (double speed, framepos_t destination_frame, bool a
 				   take care of it.
 				*/
 				_play_range = false;
+				_count_in_once = false;
 				unset_play_loop ();
 			}
 			_engine.transport_stop ();
@@ -1388,6 +1466,7 @@ Session::set_transport_speed (double speed, framepos_t destination_frame, bool a
 
 		if (synced_to_engine()) {
 			_engine.transport_start ();
+			_count_in_once = false;
 		} else {
 			start_transport ();
 		}
@@ -1480,6 +1559,7 @@ Session::set_transport_speed (double speed, framepos_t destination_frame, bool a
 void
 Session::stop_transport (bool abort, bool clear_state)
 {
+	_count_in_once = false;
 	if (_transport_speed == 0.0f) {
 		return;
 	}
@@ -1578,7 +1658,7 @@ Session::start_transport ()
 
 	switch (record_status()) {
 	case Enabled:
-		if (!config.get_punch_in()) {
+		if (!config.get_punch_in() && !preroll_record_punch_enabled()) {
 			enable_record ();
 		}
 		break;
@@ -1612,6 +1692,40 @@ Session::start_transport ()
 		if (!dynamic_cast<MTC_Slave*>(_slave)) {
 			send_immediate_mmc (MIDI::MachineControlCommand (MIDI::MachineControl::cmdDeferredPlay));
 		}
+
+		if (actively_recording() && click_data && (config.get_count_in () || _count_in_once)) {
+			_count_in_once = false;
+			/* calculate count-in duration (in audio samples)
+			 * - use [fixed] tempo/meter at _transport_frame
+			 * - calc duration of 1 bar + time-to-beat before or at transport_frame
+			 */
+			const Tempo& tempo = _tempo_map->tempo_at_frame (_transport_frame);
+			const Meter& meter = _tempo_map->meter_at_frame (_transport_frame);
+
+			const double num = meter.divisions_per_bar ();
+			const double den = meter.note_divisor ();
+			const double barbeat = _tempo_map->exact_qn_at_frame (_transport_frame, 0) * den / (4. * num);
+			const double bar_fract = fmod (barbeat, 1.0); // fraction of bar elapsed.
+
+			_count_in_samples = meter.frames_per_bar (tempo, _current_frame_rate);
+
+			double dt = _count_in_samples / num;
+			if (bar_fract == 0) {
+				/* at bar boundary, count-in 2 bars before start. */
+				_count_in_samples *= 2;
+			} else {
+				/* beats left after full bar until roll position */
+				_count_in_samples *= 1. + bar_fract;
+			}
+
+			int clickbeat = 0;
+			framepos_t cf = _transport_frame - _count_in_samples;
+			while (cf < _transport_frame) {
+				add_click (cf - _worst_track_latency, clickbeat == 0);
+				cf += dt;
+				clickbeat = fmod (clickbeat + 1, num);
+			}
+		}
 	}
 
 	DEBUG_TRACE (DEBUG::Transport, string_compose ("send TSC4 with speed = %1\n", _transport_speed));
@@ -1642,6 +1756,7 @@ Session::post_transport ()
 	if (ptw & PostTransportLocate) {
 
 		if (((!config.get_external_sync() && (auto_play_legal && config.get_auto_play())) && !_exporting) || (ptw & PostTransportRoll)) {
+			_count_in_once = false;
 			start_transport ();
 		} else {
 			transport_sub_state = 0;

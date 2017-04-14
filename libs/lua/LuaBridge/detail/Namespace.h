@@ -363,7 +363,7 @@ private:
 
       if (Security::hideMetatables ())
       {
-        lua_pushnil (L);
+        lua_pushboolean (L, false);
         rawsetfield (L, -2, "__metatable");
       }
     }
@@ -400,7 +400,7 @@ private:
 
       if (Security::hideMetatables ())
       {
-        lua_pushnil (L);
+        lua_pushboolean (L, false);
         rawsetfield (L, -2, "__metatable");
       }
     }
@@ -442,7 +442,7 @@ private:
 
       if (Security::hideMetatables ())
       {
-        lua_pushnil (L);
+        lua_pushboolean (L, false);
         rawsetfield (L, -2, "__metatable");
       }
     }
@@ -470,6 +470,23 @@ private:
     {
       ArgList <Params, 2> args (L);
       Constructor <T, Params>::call (UserdataValue <T>::place (L), args);
+      return 1;
+    }
+
+    template <class Params, class T, class C>
+    static int ctorPtrPlacementProxy (lua_State* L)
+    {
+      ArgList <Params, 2> args (L);
+      T newobject (Constructor <C, Params>::call (args));
+      Stack<T>::push (L, newobject);
+      return 1;
+    }
+
+    template <class T>
+    static int ctorNilPtrPlacementProxy (lua_State* L)
+    {
+      const T* newobject = new T ();
+      Stack<T>::push (L, *newobject);
       return 1;
     }
 
@@ -562,10 +579,14 @@ private:
         createConstTable (name);
         lua_pushcfunction (L, &CFunc::gcMetaMethod <T>);
         rawsetfield (L, -2, "__gc");
+        lua_pushcclosure (L, &CFunc::ClassEqualCheck <T>::f, 0);
+        rawsetfield (L, -2, "__eq");
 
         createClassTable (name);
         lua_pushcfunction (L, &CFunc::gcMetaMethod <T>);
         rawsetfield (L, -2, "__gc");
+        lua_pushcclosure (L, &CFunc::ClassEqualCheck <T>::f, 0);
+        rawsetfield (L, -2, "__eq");
 
         createStaticTable (name);
 
@@ -609,10 +630,14 @@ private:
       createConstTable (name);
       lua_pushcfunction (L, &CFunc::gcMetaMethod <T>);
       rawsetfield (L, -2, "__gc");
+      lua_pushcclosure (L, &CFunc::ClassEqualCheck <T>::f, 0);
+      rawsetfield (L, -2, "__eq");
 
       createClassTable (name);
       lua_pushcfunction (L, &CFunc::gcMetaMethod <T>);
       rawsetfield (L, -2, "__gc");
+      lua_pushcclosure (L, &CFunc::ClassEqualCheck <T>::f, 0);
+      rawsetfield (L, -2, "__eq");
 
       createStaticTable (name);
 
@@ -959,6 +984,8 @@ private:
       DATADOC ("Ext C Function", name, fp)
       assert (lua_istable (L, -1));
       lua_pushcclosure (L, fp, 0);
+      lua_pushvalue (L, -1);
+      rawsetfield (L, -5, name); // const table
       rawsetfield (L, -3, name); // class table
       return *this;
     }
@@ -1037,14 +1064,30 @@ private:
       return *this;
     }
 
+    template <class MemFn, class PT>
+    Class <T>& addPtrConstructor ()
+    {
+      FUNDOC("Constructor", "", MemFn)
+      lua_pushcclosure (L,
+        &ctorPtrPlacementProxy <typename FuncTraits <MemFn>::Params, T, PT>, 0);
+      rawsetfield(L, -2, "__call");
+
+      return *this;
+    }
+
     Class <T>& addVoidConstructor ()
     {
       return addConstructor <void (*) ()> ();
     }
 
+    template <class PT>
+    Class <T>& addVoidPtrConstructor ()
+    {
+      return addPtrConstructor <void (*) (), PT> ();
+    }
+
     Class <T>& addEqualCheck ()
     {
-      PRINTDOC("Member Function", _name << "sameinstance", std::string("bool"), std::string("void (*)(" + type_name <T>() + ")"))
       assert (lua_istable (L, -1));
       lua_pushcclosure (L, &CFunc::ClassEqualCheck <T>::f, 0);
       rawsetfield (L, -3, "sameinstance");
@@ -1088,8 +1131,6 @@ private:
           std::string(""), "int (*)(lua_State*)")
       PRINTDOC ("Ext C Function", _name << "set_table",
           std::string(""), "int (*)(lua_State*)")
-      PRINTDOC("Member Function", _name << "sameinstance",
-          std::string("bool"), std::string("bool (*)(" + type_name <T>() + "*)"))
       PRINTDOC("Member Function", _name << "offset",
           std::string(type_name <T>() + "*"), std::string(type_name <T>() + "* (*)(unsigned int)"))
 
@@ -1120,15 +1161,25 @@ private:
         lua_setfield(L, -2, "__index");
         lua_pushcclosure (L, CFunc::array_newindex<T>, 0);
         lua_setfield(L, -2, "__newindex");
+        if (Security::hideMetatables ())
+        {
+          lua_pushboolean (L, false);
+          rawsetfield (L, -2, "__metatable");
+        }
         lua_pop (L, 1);
+
 
         createConstTable (name);
         lua_pushcfunction (L, &CFunc::gcMetaMethod <T>);
         rawsetfield (L, -2, "__gc");
+        lua_pushcclosure (L, &CFunc::ClassEqualCheck <T>::f, 0);
+        rawsetfield (L, -2, "__eq");
 
         createClassTable (name);
         lua_pushcfunction (L, &CFunc::gcMetaMethod <T>);
         rawsetfield (L, -2, "__gc");
+        lua_pushcclosure (L, &CFunc::ClassEqualCheck <T>::f, 0);
+        rawsetfield (L, -2, "__eq");
 
         createStaticTable (name);
 
@@ -1177,8 +1228,8 @@ private:
   public:
     WSPtrClass (char const* name, Namespace const* parent)
       : ClassBase (parent->L)
-      , weak (name, parent)
       , shared (name, parent)
+      , weak (name, parent)
     {
 #ifdef LUABINDINGDOC
       _parent = parent;
@@ -1187,21 +1238,21 @@ private:
       PRINTDOC ("[C] Weak/Shared Pointer Class",
           parent->_name + name,
           std::string(), type_name <T>())
-      m_stackSize = weak.m_stackSize;
+      m_stackSize = shared.m_stackSize;
       parent->m_stackSize = weak.m_stackSize = shared.m_stackSize = 0;
       lua_pop (L, 3);
     }
 
     WSPtrClass (char const* name, Namespace const* parent, void const* const sharedkey, void const* const weakkey)
       : ClassBase (parent->L)
-      , weak (name, parent, weakkey)
       , shared (name, parent, sharedkey)
+      , weak (name, parent, weakkey)
     {
 #ifdef LUABINDINGDOC
       _parent = parent;
       _name = parent->_name + name + ":";
 #endif
-      m_stackSize = weak.m_stackSize;
+      m_stackSize = shared.m_stackSize;
       parent->m_stackSize = weak.m_stackSize = shared.m_stackSize = 0;
       lua_pop (L, 3);
     }
@@ -1210,11 +1261,11 @@ private:
     WSPtrClass <T>& addFunction (char const* name, MemFn mf)
     {
       FUNDOC ("Weak/Shared Pointer Function", name, MemFn)
-      set_weak_class ();
-      CFunc::CallMemberWPtrFunctionHelper <MemFn>::add (L, name, mf);
-
       set_shared_class ();
       CFunc::CallMemberPtrFunctionHelper <MemFn>::add (L, name, mf);
+
+      set_weak_class ();
+      CFunc::CallMemberWPtrFunctionHelper <MemFn>::add (L, name, mf);
       return *this;
     }
 
@@ -1222,11 +1273,11 @@ private:
     WSPtrClass <T>& addRefFunction (char const* name, MemFn mf)
     {
       FUNDOC ("Weak/Shared Pointer Function RefReturn", name, MemFn)
-      set_weak_class ();
-      CFunc::CallMemberRefWPtrFunctionHelper <MemFn>::add (L, name, mf);
-
       set_shared_class ();
       CFunc::CallMemberRefPtrFunctionHelper <MemFn>::add (L, name, mf);
+
+      set_weak_class ();
+      CFunc::CallMemberRefWPtrFunctionHelper <MemFn>::add (L, name, mf);
       return *this;
     }
 
@@ -1234,14 +1285,16 @@ private:
     WSPtrClass <T>& addConstructor ()
     {
       FUNDOC ("Weak/Shared Pointer Constructor", "", MemFn)
-      set_weak_class ();
-      lua_pushcclosure (L,
-          &weak. template ctorPlacementProxy <typename FuncTraits <MemFn>::Params, boost::weak_ptr<T> >, 0);
-      rawsetfield(L, -2, "__call");
-
       set_shared_class ();
       lua_pushcclosure (L,
-          &shared. template ctorPlacementProxy <typename FuncTraits <MemFn>::Params, boost::shared_ptr<T> >, 0);
+          &shared. template ctorPtrPlacementProxy <typename FuncTraits <MemFn>::Params, boost::shared_ptr<T>, T >, 0);
+      rawsetfield(L, -2, "__call");
+
+      set_weak_class ();
+      // NOTE: this constructs an empty weak-ptr,
+      // ideally we'd construct a weak-ptr from a referenced shared-ptr
+      lua_pushcclosure (L,
+          &weak. template ctorPlacementProxy <typename FuncTraits <MemFn>::Params, boost::weak_ptr<T> >, 0);
       rawsetfield(L, -2, "__call");
       return *this;
     }
@@ -1251,17 +1304,39 @@ private:
       return addConstructor <void (*) ()> ();
     }
 
+    WSPtrClass <T>& addNilPtrConstructor ()
+    {
+      FUNDOC ("Weak/Shared Pointer NIL Constructor", "", void (*) ())
+      set_shared_class ();
+      lua_pushcclosure (L,
+          &shared. template ctorNilPtrPlacementProxy <boost::shared_ptr<T> >, 0);
+      rawsetfield(L, -2, "__call");
+
+      set_weak_class ();
+      // NOTE: this constructs an empty weak-ptr,
+      // ideally we'd construct a weak-ptr from a referenced shared-ptr
+      lua_pushcclosure (L,
+          &weak. template ctorNilPtrPlacementProxy <boost::weak_ptr<T> >, 0);
+      rawsetfield(L, -2, "__call");
+
+      return *this;
+    }
+
     WSPtrClass <T>& addExtCFunction (char const* name, int (*const fp)(lua_State*))
     {
       DATADOC ("Weak/Shared Ext C Function", name, fp)
-      set_weak_class ();
-      assert (lua_istable (L, -1));
-      lua_pushcclosure (L, fp, 0);
-      rawsetfield (L, -3, name); // class table
-
       set_shared_class ();
       assert (lua_istable (L, -1));
       lua_pushcclosure (L, fp, 0);
+      lua_pushvalue (L, -1);
+      rawsetfield (L, -5, name); // const table
+      rawsetfield (L, -3, name); // class table
+
+      set_weak_class ();
+      assert (lua_istable (L, -1));
+      lua_pushcclosure (L, fp, 0);
+      lua_pushvalue (L, -1);
+      rawsetfield (L, -5, name); // const table
       rawsetfield (L, -3, name); // class table
 
       return *this;
@@ -1285,14 +1360,14 @@ private:
     WSPtrClass <T>& addNullCheck ()
     {
       PRINTDOC("Weak/Shared Null Check", _name << "isnil", std::string("bool"), std::string("void (*)()"))
-      set_weak_class ();
-      assert (lua_istable (L, -1));
-      lua_pushcclosure (L, &CFunc::WPtrNullCheck <T>::f, 0);
-      rawsetfield (L, -3, "isnil"); // class table
-
       set_shared_class ();
       assert (lua_istable (L, -1));
       lua_pushcclosure (L, &CFunc::PtrNullCheck <T>::f, 0);
+      rawsetfield (L, -3, "isnil"); // class table
+
+      set_weak_class ();
+      assert (lua_istable (L, -1));
+      lua_pushcclosure (L, &CFunc::WPtrNullCheck <T>::f, 0);
       rawsetfield (L, -3, "isnil"); // class table
 
       return *this;
@@ -1300,15 +1375,14 @@ private:
 
     WSPtrClass <T>& addEqualCheck ()
     {
-      PRINTDOC("Member Function", _name << "sameinstance", std::string("bool"), std::string("void (*)(" + type_name <T>() + ")"))
-      set_weak_class ();
-      assert (lua_istable (L, -1));
-      lua_pushcclosure (L, &CFunc::WPtrEqualCheck <T>::f, 0);
-      rawsetfield (L, -3, "sameinstance"); // class table
-
       set_shared_class ();
       assert (lua_istable (L, -1));
       lua_pushcclosure (L, &CFunc::PtrEqualCheck <T>::f, 0);
+      rawsetfield (L, -3, "sameinstance"); // class table
+
+      set_weak_class ();
+      assert (lua_istable (L, -1));
+      lua_pushcclosure (L, &CFunc::WPtrEqualCheck <T>::f, 0);
       rawsetfield (L, -3, "sameinstance"); // class table
 
       return *this;
@@ -1396,8 +1470,8 @@ private:
       lua_insert (L, -3);
       lua_insert (L, -2);
     }
-    Class<boost::weak_ptr<T> > weak;
     Class<boost::shared_ptr<T> > shared;
+    Class<boost::weak_ptr<T> > weak;
   };
 
 
@@ -1464,6 +1538,12 @@ private:
       lua_pushcfunction (L, &tostringMetaMethod);
       rawsetfield (L, -2, "__tostring");
 #endif
+      if (Security::hideMetatables ())
+      {
+        lua_pushboolean (L, false);
+        rawsetfield (L, -2, "__metatable");
+      }
+
     }
   }
 
@@ -1762,9 +1842,8 @@ public:
       .addFunction ("clear", (void (LT::*)())&LT::clear)
       .addFunction ("empty", &LT::empty)
       .addFunction ("size", &LT::size)
-      .addExtCFunction ("add", &CFunc::tableToSet<T>)
-      .addExtCFunction ("iter", &CFunc::setIter<T>)
-      .addExtCFunction ("table", &CFunc::setToTable<T>);
+      .addExtCFunction ("iter", &CFunc::setIter<T, LT>)
+      .addExtCFunction ("table", &CFunc::setToTable<T, LT>);
   }
 
   template <unsigned int T>
@@ -1793,6 +1872,8 @@ public:
       .addFunction ("empty", &LT::empty)
       .addFunction ("size", &LT::size)
       .addFunction ("reverse", &LT::reverse)
+      .addFunction ("front", static_cast<const T& (LT::*)() const>(&LT::front))
+      .addFunction ("back", static_cast<const T& (LT::*)() const>(&LT::back))
       .addExtCFunction ("iter", &CFunc::listIter<T, LT>)
       .addExtCFunction ("table", &CFunc::listToTable<T, LT>);
   }
@@ -1808,7 +1889,34 @@ public:
   }
 
   template <class T>
-  Class<std::vector<T> > beginStdVector (char const* name)
+  Class<std::list<T*> > beginConstStdCPtrList (char const* name)
+  {
+    typedef T* TP;
+    typedef std::list<TP> LT;
+    return beginClass<LT> (name)
+      .addVoidConstructor ()
+      .addFunction ("empty", &LT::empty)
+      .addFunction ("size", &LT::size)
+      .addFunction ("reverse", &LT::reverse)
+      .addFunction ("front", static_cast<const TP& (LT::*)() const>(&LT::front))
+      .addFunction ("back", static_cast<const TP& (LT::*)() const>(&LT::back))
+      .addExtCFunction ("iter", &CFunc::listIter<T*, LT>)
+      .addExtCFunction ("table", &CFunc::listToTable<T*, LT>);
+  }
+
+  template <class T>
+  Class<std::list<T*> > beginStdCPtrList (char const* name)
+  {
+    typedef T* TP;
+    typedef std::list<TP> LT;
+    return beginConstStdCPtrList<T> (name)
+      .addFunction ("unique", (void (LT::*)())&LT::unique)
+      .addFunction ("push_back", (void (LT::*)(const TP&))&LT::push_back);
+  }
+
+
+  template <class T>
+  Class<std::vector<T> > beginConstStdVector (char const* name)
   {
     typedef std::vector<T> LT;
     typedef typename std::vector<T>::reference T_REF;
@@ -1818,12 +1926,22 @@ public:
       .addVoidConstructor ()
       .addFunction ("empty", &LT::empty)
       .addFunction ("size", &LT::size)
-      .addFunction ("push_back", (void (LT::*)(const T&))&LT::push_back)
       .addFunction ("at", (T_REF (LT::*)(T_SIZE))&LT::at)
-      .addExtCFunction ("add", &CFunc::tableToList<T, LT>)
       .addExtCFunction ("iter", &CFunc::listIter<T, LT>)
       .addExtCFunction ("table", &CFunc::listToTable<T, LT>);
   }
+
+  template <class T>
+  Class<std::vector<T> > beginStdVector (char const* name)
+  {
+    typedef std::vector<T> LT;
+    return beginConstStdVector<T> (name)
+      .addVoidConstructor ()
+      .addFunction ("push_back", (void (LT::*)(const T&))&LT::push_back)
+      .addExtCFunction ("add", &CFunc::tableToList<T, LT>);
+  }
+
+
 
   //----------------------------------------------------------------------------
 
@@ -1831,9 +1949,8 @@ public:
   Class<boost::shared_ptr<std::list<T> > > beginPtrStdList (char const* name)
   {
     typedef std::list<T> LT;
-
     return beginClass<boost::shared_ptr<LT> > (name)
-      .addVoidConstructor ()
+      //.addVoidPtrConstructor<LT> ()
       .addPtrFunction ("empty", &LT::empty)
       .addPtrFunction ("size", &LT::size)
       .addPtrFunction ("reverse", &LT::reverse)
@@ -1852,7 +1969,7 @@ public:
     typedef typename std::vector<T>::size_type T_SIZE;
 
     return beginClass<boost::shared_ptr<LT> > (name)
-      .addVoidConstructor ()
+      //.addVoidPtrConstructor<LT> ()
       .addPtrFunction ("empty", &LT::empty)
       .addPtrFunction ("empty", &LT::empty)
       .addPtrFunction ("size", &LT::size)

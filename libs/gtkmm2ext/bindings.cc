@@ -782,60 +782,91 @@ Bindings::save_all_bindings_as_html (ostream& ostr)
 	ostr << PROGRAM_NAME;
 	ostr << "</title>\n";
 
-
-	ostr << "<style>\n";
-	ostr << "\n\
-.key-name-even, .key-name-odd\n\
-{\n\
-    font-weight: bold;\n\
-}\n\
-\n\
-.key-action-odd, .key-action-even\n\
-{\n\
-    font-weight: normal;\n\
-    font-style: italic;\n\
-}";
-	ostr << "</style>\n";
-
 	ostr << "</head>\n<body>\n";
 
-	ostr << "<div class=\"container\">\n";
-
+	ostr << "<table border=\"2\" cellpadding=\"6\"><tbody>\n\n";
+	ostr << "<tr>\n\n";
+	
+	/* first column: separate by group */
+	ostr << "<td>\n\n";
 	for (list<Bindings*>::const_iterator b = bindings.begin(); b != bindings.end(); ++b) {
-		(*b)->save_as_html (ostr);
+		(*b)->save_as_html (ostr, true);
 	}
+	ostr << "</td>\n\n";
 
-	ostr << "</div>\n";
+	//second column
+	ostr << "<td style=\"vertical-align:top\">\n\n";
+	for (list<Bindings*>::const_iterator b = bindings.begin(); b != bindings.end(); ++b) {
+		(*b)->save_as_html (ostr, false);
+	}
+	ostr << "</td>\n\n";
+
+
+	ostr << "</tr>\n\n";
+	ostr << "</tbody></table>\n\n";
+
+	ostr << "</br></br>\n\n";
+	ostr << "<table border=\"2\" cellpadding=\"6\"><tbody>\n\n";
+	ostr << "<tr>\n\n";
+	ostr << "<td>\n\n";
+	ostr << "<h2><u> Partial List of Available Actions { => with current shortcut, where applicable } </u></h2>\n\n";
+	{
+		vector<string> paths;
+		vector<string> labels;
+		vector<string> tooltips;
+		vector<string> keys;
+		vector<Glib::RefPtr<Gtk::Action> > actions;
+
+		Gtkmm2ext::ActionMap::get_all_actions (paths, labels, tooltips, keys, actions);
+
+		vector<string>::iterator k;
+		vector<string>::iterator p;
+		vector<string>::iterator l;
+
+		for (p = paths.begin(), k = keys.begin(), l = labels.begin(); p != paths.end(); ++k, ++p, ++l) {
+
+			if ((*k).empty()) {
+				ostr << *p  << " ( " << *l << " ) "  << "</br>" << endl;
+			} else {
+				ostr << *p << " ( " << *l << " ) " << " => " << *k << "</br>" << endl;
+			}
+		}
+	}
+	ostr << "</td>\n\n";
+	ostr << "</tr>\n\n";
+	ostr << "</tbody></table>\n\n";
+	
 	ostr << "</body>\n";
 	ostr << "</html>\n";
 }
 
 void
-Bindings::save_as_html (ostream& ostr) const
+Bindings::save_as_html (ostream& ostr, bool categorize) const
 {
 
 	if (!press_bindings.empty()) {
 
-		ostr << "<div class=\"binding-set\">\n";
-		ostr << "<h1>";
-		ostr << name();
-		ostr << "</h1>\n\n";
-
-		/* first pass: separate by group */
+		ostr << "<h2><u>";
+		if (categorize)
+			ostr << _("Window") << ": " << name() << _(" (Categorized)");
+		else
+			ostr << _("Window") << ": " << name() << _(" (Alphabetical)");
+		ostr << "</u></h2>\n\n";
 
 		typedef std::map<std::string, std::vector<KeybindingMap::const_iterator> > GroupMap;
 		GroupMap group_map;
 
 		for (KeybindingMap::const_iterator k = press_bindings.begin(); k != press_bindings.end(); ++k) {
+			
 			if (k->first.name().empty()) {
 				continue;
 			}
 
 			string group_name;
-			if (!k->second.group_name.empty()) {
+			if (categorize && !k->second.group_name.empty()) {
 				group_name = k->second.group_name;
 			} else {
-				group_name = X_("nogroup");
+				group_name = _("Uncategorized");
 			}
 
 			GroupMap::iterator gm = group_map.find (group_name);
@@ -848,11 +879,13 @@ Bindings::save_as_html (ostream& ostr) const
 			}
 		}
 
+		
 		for (GroupMap::const_iterator gm = group_map.begin(); gm != group_map.end(); ++gm) {
 
-			ostr << "<div class=\"group\">\n";
-			ostr << "<div class=\"group-name\">" << gm->first << "</div>\n";
-
+			if (categorize) {
+				ostr << "<h3>" << gm->first << "</h3>\n";
+			}
+			
 			for (vector<KeybindingMap::const_iterator>::const_iterator k = gm->second.begin(); k != gm->second.end(); ++k) {
 
 				if ((*k)->first.name().empty()) {
@@ -875,6 +908,7 @@ Bindings::save_as_html (ostream& ostr) const
 
 				string key_name = (*k)->first.native_short_name ();
 				replace_all (key_name, X_("KP_"), X_("Numpad "));
+				replace_all (key_name, X_("nabla"), X_("Tab"));
 
 				string::size_type pos;
 
@@ -900,14 +934,20 @@ Bindings::save_as_html (ostream& ostr) const
 						key_name.replace (pos, strlen (targets[n]), replacements[n]);
 					}
 				}
+				
+				key_name.append(" ");
 
-				ostr << "<div class=\"key\">" << key_name << "</div>";
-				ostr << "<div class=\"action\">" << action->get_label() << "</div>\n";
+				while (key_name.length()<28)
+					key_name.append("-");
+
+				ostr << "<span style=\"font-family:monospace;\">" << key_name;
+				ostr << "<i>" << action->get_label() << "</i></span></br>\n";
 			}
-			ostr << "</div>\n\n";
-		}
+			ostr << "\n\n";
 
-		ostr << "</div>\n";
+		}
+		
+		ostr << "\n";
 	}
 }
 
@@ -1047,6 +1087,17 @@ Bindings::is_bound (KeyboardKey const& kb, Operation op) const
 	return km.find(kb) != km.end();
 }
 
+std::string
+Bindings::bound_name (KeyboardKey const& kb, Operation op) const
+{
+	const KeybindingMap& km = get_keymap(op);
+	KeybindingMap::const_iterator b = km.find(kb);
+	if (b == km.end()) {
+		return "";
+	}
+	return b->second.action_name;
+}
+
 bool
 Bindings::is_registered (Operation op, std::string const& action_name) const
 {
@@ -1133,6 +1184,13 @@ ActionMap::find_action (const string& name)
 RefPtr<ActionGroup>
 ActionMap::create_action_group (const string& name)
 {
+	Glib::ListHandle<Glib::RefPtr<ActionGroup> > agl =  ActionManager::ui_manager->get_action_groups ();
+	for (Glib::ListHandle<Glib::RefPtr<ActionGroup> >::iterator i = agl.begin (); i != agl.end (); ++i) {
+		if ((*i)->get_name () == name) {
+			return *i;
+		}
+	}
+
 	RefPtr<ActionGroup> g = ActionGroup::create (name);
 
 	/* this is one of the places where our own Action management code

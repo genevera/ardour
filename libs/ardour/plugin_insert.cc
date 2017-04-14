@@ -98,6 +98,9 @@ PluginInsert::PluginInsert (Session& s, boost::shared_ptr<Plugin> plug)
 
 PluginInsert::~PluginInsert ()
 {
+	for (CtrlOutMap::const_iterator i = _control_outputs.begin(); i != _control_outputs.end(); ++i) {
+		boost::dynamic_pointer_cast<ReadOnlyControl>(i->second)->drop_references ();
+	}
 }
 
 void
@@ -430,6 +433,13 @@ PluginInsert::has_output_presets (ChanCount in, ChanCount out)
 			return false;
 		}
 	}
+
+	if (ppc.size () == 1 && ppc.find (0) != ppc.end () && !_plugins[0]->get_info ()->reconfigurable_io ()) {
+		// some midi-sequencer (e.g. QMidiArp) or other midi-out plugin
+		// pretending to be an "Instrument"
+		return false;
+	}
+
 	if (!is_instrument ()) {
 			return false;
 	}
@@ -445,7 +455,11 @@ PluginInsert::create_automatable_parameters ()
 	set<Evoral::Parameter> a = _plugins.front()->automatable ();
 
 	for (uint32_t i = 0; i < plugin->parameter_count(); ++i) {
-		if (!plugin->parameter_is_control (i) || !plugin->parameter_is_input (i)) {
+		if (!plugin->parameter_is_control (i)) {
+			continue;
+		}
+		if (!plugin->parameter_is_input (i)) {
+			_control_outputs[i] = boost::shared_ptr<ReadOnlyControl> (new ReadOnlyControl (plugin, i));
 			continue;
 		}
 		Evoral::Parameter param (PluginAutomation, 0, i);
@@ -483,6 +497,21 @@ PluginInsert::create_automatable_parameters ()
 
 	_bypass_port = plugin->designated_bypass_port ();
 
+	/* special case VST effSetBypass */
+	if (_bypass_port == UINT32_MAX -1) {
+		// emulate VST Bypass
+		Evoral::Parameter param (PluginAutomation, 0, _bypass_port);
+		ParameterDescriptor desc;
+		desc.label = _("Plugin Enable");
+		desc.toggled  = true;
+		desc.normal = 1;
+		desc.lower  = 0;
+		desc.upper  = 1;
+		boost::shared_ptr<AutomationList> list(new AutomationList(param, desc));
+		boost::shared_ptr<AutomationControl> c (new PluginControl(this, param, desc, list));
+		add_control (c);
+	}
+
 	if (_bypass_port != UINT32_MAX) {
 		boost::shared_ptr<AutomationControl> ac = automation_control (Evoral::Parameter (PluginAutomation, 0, _bypass_port));
 		if (0 == (ac->flags () & Controllable::NotAutomatable)) {
@@ -490,7 +519,9 @@ PluginInsert::create_automatable_parameters ()
 			ac->Changed.connect_same_thread (*this, boost::bind (&PluginInsert::enable_changed, this));
 		}
 	}
+	plugin->PresetPortSetValue.connect_same_thread (*this, boost::bind (&PluginInsert::preset_load_set_value, this, _1, _2));
 }
+
 /** Called when something outside of this host has modified a plugin
  * parameter. Responsible for propagating the change to two places:
  *
@@ -609,7 +640,27 @@ PluginInsert::enable (bool yn)
 			activate ();
 		}
 		boost::shared_ptr<AutomationControl> ac = automation_control (Evoral::Parameter (PluginAutomation, 0, _bypass_port));
-		ac->set_value (yn ? 1.0 : 0.0, Controllable::NoGroup);
+		const double val = yn ? 1.0 : 0.0;
+		ac->set_value (val, Controllable::NoGroup);
+
+#ifdef ALLOW_VST_BYPASS_TO_FAIL // yet unused, see also vst_plugin.cc
+		/* special case VST.. bypass may fail */
+		if (_bypass_port == UINT32_MAX - 1) {
+			/* check if bypass worked */
+			if (ac->get_value () != val) {
+				warning << _("PluginInsert: VST Bypass failed, falling back to host bypass.") << endmsg;
+				// set plugin to enabled (not-byassed)
+				ac->set_value (1.0, Controllable::NoGroup);
+				// ..and use host-provided hard-bypass
+				if (yn) {
+					activate ();
+				} else {
+					deactivate ();
+				}
+				return;
+			}
+		}
+#endif
 		ActiveChanged ();
 	}
 }
@@ -647,6 +698,23 @@ void
 PluginInsert::bypassable_changed ()
 {
 	BypassableChanged ();
+}
+
+void
+PluginInsert::preset_load_set_value (uint32_t p, float v)
+{
+	boost::shared_ptr<AutomationControl> ac = automation_control (Evoral::Parameter(PluginAutomation, 0, p));
+	if (!ac) {
+		return;
+	}
+
+	if (ac->automation_state() & Play) {
+		return;
+	}
+
+	start_touch (p);
+	ac->set_value (v, Controllable::NoGroup);
+	end_touch (p);
 }
 
 void
@@ -2539,6 +2607,14 @@ PluginInsert::set_state(const XMLNode& node, int version)
 				}
 			}
 
+			/* when copying plugin state, notify UI */
+			for (Controls::const_iterator li = controls().begin(); li != controls().end(); ++li) {
+				boost::shared_ptr<PBD::Controllable> c = boost::dynamic_pointer_cast<PBD::Controllable> (li->second);
+				if (c) {
+					c->Changed (false, Controllable::NoGroup); /* EMIT SIGNAL */
+				}
+			}
+
 			break;
 		}
 	}
@@ -2734,6 +2810,16 @@ PluginInsert::set_parameter_state_2X (const XMLNode& node, int version)
 	}
 }
 
+boost::shared_ptr<ReadOnlyControl>
+PluginInsert::control_output (uint32_t num) const
+{
+	CtrlOutMap::const_iterator i = _control_outputs.find (num);
+	if (i == _control_outputs.end ()) {
+		return boost::shared_ptr<ReadOnlyControl> ();
+	} else {
+		return (*i).second;
+	}
+}
 
 string
 PluginInsert::describe_parameter (Evoral::Parameter param)
@@ -2909,6 +2995,7 @@ PluginInsert::get_impulse_analysis_plugin()
 			assert (out == internal_output_streams ());
 		}
 		ret->configure_io (internal_input_streams (), out);
+		ret->set_owner (_owner);
 		_impulseAnalysisPlugin = ret;
 	} else {
 		ret = _impulseAnalysisPlugin.lock();
@@ -3014,19 +3101,21 @@ PluginInsert::latency_changed ()
 void
 PluginInsert::start_touch (uint32_t param_id)
 {
-        boost::shared_ptr<AutomationControl> ac = automation_control (Evoral::Parameter (PluginAutomation, 0, param_id));
-        if (ac) {
-                ac->start_touch (session().audible_frame());
-        }
+	boost::shared_ptr<AutomationControl> ac = automation_control (Evoral::Parameter (PluginAutomation, 0, param_id));
+	if (ac) {
+		// ToDo subtract _plugin_signal_latency  from audible_frame() when rolling, assert > 0
+		ac->start_touch (session().audible_frame());
+	}
 }
 
 void
 PluginInsert::end_touch (uint32_t param_id)
 {
-        boost::shared_ptr<AutomationControl> ac = automation_control (Evoral::Parameter (PluginAutomation, 0, param_id));
-        if (ac) {
-                ac->stop_touch (true, session().audible_frame());
-        }
+	boost::shared_ptr<AutomationControl> ac = automation_control (Evoral::Parameter (PluginAutomation, 0, param_id));
+	if (ac) {
+		// ToDo subtract _plugin_signal_latency  from audible_frame() when rolling, assert > 0
+		ac->stop_touch (true, session().audible_frame());
+	}
 }
 
 std::ostream& operator<<(std::ostream& o, const ARDOUR::PluginInsert::Match& m)

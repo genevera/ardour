@@ -1006,7 +1006,7 @@ Editor::canvas_videotl_bar_event (GdkEvent *event, ArdourCanvas::Item* item)
 }
 
 bool
-Editor::canvas_tempo_marker_event (GdkEvent *event, ArdourCanvas::Item* item, TempoMarker* /*marker*/)
+Editor::canvas_tempo_marker_event (GdkEvent *event, ArdourCanvas::Item* item, TempoMarker* marker)
 {
 	return typed_event (item, event, TempoMarkerItem);
 }
@@ -1295,7 +1295,9 @@ Editor::drop_regions (const Glib::RefPtr<Gdk::DragContext>& /*context*/,
 			} else if (boost::dynamic_pointer_cast<MidiRegion> (region)) {
 				ChanCount one_midi_port (DataType::MIDI, 1);
 				list<boost::shared_ptr<MidiTrack> > midi_tracks;
-				midi_tracks = session()->new_midi_track (one_midi_port, one_midi_port, boost::shared_ptr<ARDOUR::PluginInfo>(),
+				midi_tracks = session()->new_midi_track (one_midi_port, one_midi_port,
+				                                         Config->get_strict_io () || Profile->get_mixbus (),
+				                                         boost::shared_ptr<ARDOUR::PluginInfo>(),
 				                                         (ARDOUR::Plugin::PresetRecord*) 0,
 				                                         (ARDOUR::RouteGroup*) 0, 1, region->name(), PresentationInfo::max_order);
 				rtav = dynamic_cast<RouteTimeAxisView*> (axis_view_from_stripable (midi_tracks.front()));
@@ -1314,7 +1316,7 @@ Editor::drop_regions (const Glib::RefPtr<Gdk::DragContext>& /*context*/,
 		if ((boost::dynamic_pointer_cast<AudioRegion> (region_copy) != 0 && dynamic_cast<AudioTimeAxisView*> (rtav) != 0) ||
 		    (boost::dynamic_pointer_cast<MidiRegion> (region_copy) != 0 && dynamic_cast<MidiTimeAxisView*> (rtav) != 0)) {
 			_drags->set (new RegionInsertDrag (this, region_copy, rtav, pos), &event);
-			_drags->end_grab (0);
+			_drags->end_grab (&event);
 		}
 	}
 }

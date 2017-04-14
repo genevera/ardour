@@ -97,7 +97,6 @@ MixerStrip::MixerStrip (Mixer_UI& mx, Session* sess, bool in_mixer)
 	, solo_iso_table (1, 2)
 	, mute_solo_table (1, 2)
 	, bottom_button_table (1, 3)
-	, meter_point_button (_("pre"))
 	, monitor_section_button (0)
 	, midi_input_enable_button (0)
 	, _plugin_insert_cnt (0)
@@ -130,7 +129,6 @@ MixerStrip::MixerStrip (Mixer_UI& mx, Session* sess, boost::shared_ptr<Route> rt
 	, solo_iso_table (1, 2)
 	, mute_solo_table (1, 2)
 	, bottom_button_table (1, 3)
-	, meter_point_button (_("pre"))
 	, monitor_section_button (0)
 	, midi_input_enable_button (0)
 	, _plugin_insert_cnt (0)
@@ -179,13 +177,7 @@ MixerStrip::init ()
 	output_button.set_text (_("Output"));
 	output_button.set_name ("mixer strip button");
 
-	set_tooltip (&meter_point_button, _("Click to select metering point"));
-	meter_point_button.set_name ("mixer strip button");
-
-	bottom_button_table.attach (meter_point_button, 2, 3, 0, 1);
-
-	meter_point_button.signal_button_press_event().connect (sigc::mem_fun (gpm, &GainMeter::meter_press), false);
-	meter_point_button.signal_button_release_event().connect (sigc::mem_fun (gpm, &GainMeter::meter_release), false);
+	bottom_button_table.attach (gpm.meter_point_button, 2, 3, 0, 1);
 
 	hide_button.set_events (hide_button.get_events() & ~(Gdk::ENTER_NOTIFY_MASK|Gdk::LEAVE_NOTIFY_MASK));
 
@@ -434,6 +426,22 @@ MixerStrip::~MixerStrip ()
 		_entered_mixer_strip = NULL;
 }
 
+void
+MixerStrip::vca_assign (boost::shared_ptr<ARDOUR::VCA> vca)
+{
+	boost::shared_ptr<Slavable> sl = boost::dynamic_pointer_cast<Slavable> ( route() );
+	if (sl)
+		sl->assign(vca, false);
+}
+
+void
+MixerStrip::vca_unassign (boost::shared_ptr<ARDOUR::VCA> vca)
+{
+	boost::shared_ptr<Slavable> sl = boost::dynamic_pointer_cast<Slavable> ( route() );
+	if (sl)
+		sl->unassign(vca);
+}
+
 bool
 MixerStrip::mixer_strip_enter_event (GdkEventCrossing* /*ev*/)
 {
@@ -549,9 +557,8 @@ MixerStrip::set_route (boost::shared_ptr<Route> rt)
 		solo_button->hide ();
 		mute_button->show ();
 		rec_mon_table.hide ();
-		if (solo_iso_table.get_parent()) {
-			solo_iso_table.get_parent()->remove(solo_iso_table);
-		}
+		solo_iso_table.set_sensitive(false);
+		control_slave_ui.set_sensitive(false);
 		if (monitor_section_button == 0) {
 			Glib::RefPtr<Action> act = ActionManager::get_action ("Common", "ToggleMonitorSection");
 			_session->MonitorChanged.connect (route_connections, invalidator (*this), boost::bind (&MixerStrip::monitor_changed, this), gui_context());
@@ -572,6 +579,8 @@ MixerStrip::set_route (boost::shared_ptr<Route> rt)
 		mute_button->show ();
 		solo_button->show ();
 		rec_mon_table.show ();
+		solo_iso_table.set_sensitive(true);
+		control_slave_ui.set_sensitive(true);
 	}
 
 	if (_mixer_owned && route()->is_master() ) {
@@ -645,7 +654,7 @@ MixerStrip::set_route (boost::shared_ptr<Route> rt)
 		}
 	}
 
-	meter_point_button.set_text (meter_point_string (_route->meter_point()));
+	gpm.meter_point_button.set_text (meter_point_string (_route->meter_point()));
 
 	delete route_ops_menu;
 	route_ops_menu = 0;
@@ -713,7 +722,7 @@ MixerStrip::set_route (boost::shared_ptr<Route> rt)
 	mute_solo_table.show();
 	bottom_button_table.show();
 	gpm.show_all ();
-	meter_point_button.show();
+	gpm.meter_point_button.show();
 	input_button_box.show_all();
 	output_button.show();
 	name_button.show();
@@ -1678,13 +1687,26 @@ MixerStrip::build_route_ops_menu ()
 
 	items.push_back (MenuElem (_("Outputs..."), sigc::mem_fun (*this, &RouteUI::edit_output_configuration)));
 
-	items.push_back (SeparatorElem());
+	if (!Profile->get_mixbus()) {
+		items.push_back (SeparatorElem());
+	}
 
-	if (!_route->is_master()) {
+	if (!_route->is_master()
+#ifdef MIXBUS
+			&& !_route->mixbus()
+#endif
+			) {
+		if (Profile->get_mixbus()) {
+			items.push_back (SeparatorElem());
+		}
 		items.push_back (MenuElem (_("Save As Template..."), sigc::mem_fun(*this, &RouteUI::save_as_template)));
 	}
-	items.push_back (MenuElem (_("Rename..."), sigc::mem_fun(*this, &RouteUI::route_rename)));
-	rename_menu_item = &items.back();
+
+	if (!Profile->get_mixbus()) {
+		items.push_back (MenuElem (_("Rename..."), sigc::mem_fun(*this, &RouteUI::route_rename)));
+		/* do not allow rename if the track is record-enabled */
+		items.back().set_sensitive (!is_track() || !track()->rec_enable_control()->get_value());
+	}
 
 	items.push_back (SeparatorElem());
 	items.push_back (CheckMenuElem (_("Active")));
@@ -1752,8 +1774,6 @@ MixerStrip::name_button_button_press (GdkEventButton* ev)
 	if (ev->button == 1 || ev->button == 3) {
 		list_route_operations ();
 
-		/* do not allow rename if the track is record-enabled */
-		rename_menu_item->set_sensitive (!is_track() || !track()->rec_enable_control()->get_value());
 		if (ev->button == 1) {
 			Gtkmm2ext::anchored_menu_popup(route_ops_menu, &name_button, "",
 			                               1, ev->time);
@@ -1773,8 +1793,6 @@ MixerStrip::number_button_button_press (GdkEventButton* ev)
 	if (  ev->button == 3 ) {
 		list_route_operations ();
 
-		/* do not allow rename if the track is record-enabled */
-		rename_menu_item->set_sensitive (!is_track() || !track()->rec_enable_control()->get_value());
 		route_ops_menu->popup (1, ev->time);
 
 		return true;
@@ -2085,7 +2103,7 @@ MixerStrip::monitor_changed ()
 void
 MixerStrip::meter_changed ()
 {
-	meter_point_button.set_text (meter_point_string (_route->meter_point()));
+	gpm.meter_point_button.set_text (meter_point_string (_route->meter_point()));
 	gpm.setup_meters ();
 	// reset peak when meter point changes
 	gpm.reset_peak_display();
@@ -2126,7 +2144,7 @@ MixerStrip::drop_send ()
 	output_button.set_sensitive (true);
 	group_button.set_sensitive (true);
 	set_invert_sensitive (true);
-	meter_point_button.set_sensitive (true);
+	gpm.meter_point_button.set_sensitive (true);
 	mute_button->set_sensitive (true);
 	solo_button->set_sensitive (true);
 	solo_isolated_led->set_sensitive (true);
@@ -2173,7 +2191,7 @@ MixerStrip::show_send (boost::shared_ptr<Send> send)
 	input_button.set_sensitive (false);
 	group_button.set_sensitive (false);
 	set_invert_sensitive (false);
-	meter_point_button.set_sensitive (false);
+	gpm.meter_point_button.set_sensitive (false);
 	mute_button->set_sensitive (false);
 	solo_button->set_sensitive (false);
 	rec_enable_button->set_sensitive (false);
@@ -2279,9 +2297,9 @@ MixerStrip::set_button_names ()
 	}
 
 	if (_route) {
-		meter_point_button.set_text (meter_point_string (_route->meter_point()));
+		gpm.meter_point_button.set_text (meter_point_string (_route->meter_point()));
 	} else {
-		meter_point_button.set_text ("");
+		gpm.meter_point_button.set_text ("");
 	}
 }
 

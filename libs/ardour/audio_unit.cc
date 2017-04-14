@@ -606,7 +606,7 @@ AUPlugin::init ()
 	DEBUG_TRACE (DEBUG::AudioUnits, "count output elements\n");
 	unit->GetElementCount (kAudioUnitScope_Output, output_elements);
 
-	cb_offsets = (framecnt_t*) calloc (input_elements, sizeof(uint32_t));
+	cb_offsets = (framecnt_t*) calloc (input_elements, sizeof(framecnt_t));
 	bus_inputs = (uint32_t*) calloc (input_elements, sizeof(uint32_t));
 	bus_outputs = (uint32_t*) calloc (output_elements, sizeof(uint32_t));
 
@@ -2558,7 +2558,9 @@ AUPlugin::find_presets ()
 	/* add factory presets */
 
 	for (FactoryPresetMap::iterator i = factory_preset_map.begin(); i != factory_preset_map.end(); ++i) {
-		/* XXX: dubious */
+		/* XXX: dubious -- deleting & re-adding a preset -> same URI
+		 * good that we don't support deleting AU presets :)
+		 */
 		string const uri = string_compose ("%1", _presets.size ());
 		_presets.insert (make_pair (uri, Plugin::PresetRecord (uri, i->first, false)));
 		DEBUG_TRACE (DEBUG::AudioUnits, string_compose("AU Adding Factory Preset: %1 > %2\n", i->first, i->second));
@@ -2899,24 +2901,24 @@ AUPluginInfo::discover_by_description (PluginInfoList& plugs, CAComponentDescrip
 			continue;
 
 		case kAudioUnitType_Output:
-			info->category = _("AudioUnit Outputs");
+			info->category = _("AudioUnit Output");
 			break;
 		case kAudioUnitType_MusicDevice:
-			info->category = _("AudioUnit Instruments");
+			info->category = _("Instrument");
 			has_midi_in = true;
 			break;
 		case kAudioUnitType_MusicEffect:
-			info->category = _("AudioUnit MusicEffects");
+			info->category = _("Music Effect");
 			has_midi_in = true;
 			break;
 		case kAudioUnitType_Effect:
-			info->category = _("AudioUnit Effects");
+			info->category = _("Effect");
 			break;
 		case kAudioUnitType_Mixer:
-			info->category = _("AudioUnit Mixers");
+			info->category = _("Mixer");
 			break;
 		case kAudioUnitType_Generator:
-			info->category = _("AudioUnit Generators");
+			info->category = _("Generator");
 			break;
 		default:
 			info->category = _("AudioUnit (Unknown)");

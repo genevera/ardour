@@ -153,6 +153,16 @@ ControlGroup::add_control (boost::shared_ptr<AutomationControl> ac)
 }
 
 void
+ControlGroup::pre_realtime_queue_stuff (double val)
+{
+	Glib::Threads::RWLock::ReaderLock lm (controls_lock);
+
+	for (ControlMap::iterator c = _controls.begin(); c != _controls.end(); ++c) {
+		c->second->do_pre_realtime_queue_stuff (val);
+	}
+}
+
+void
 ControlGroup::set_group_value (boost::shared_ptr<AutomationControl> control, double val)
 {
 	double old = control->get_value ();
@@ -160,10 +170,6 @@ ControlGroup::set_group_value (boost::shared_ptr<AutomationControl> control, dou
 	/* set the primary control */
 
 	control->set_value (val, Controllable::ForGroup);
-
-	if (!_active) {
-		return;
-	}
 
 	/* now propagate across the group */
 
@@ -246,12 +252,6 @@ GainControlGroup::get_max_factor (gain_t factor)
 void
 GainControlGroup::set_group_value (boost::shared_ptr<AutomationControl> control, double val)
 {
-	if (!_active) {
-		/* set the primary control */
-		control->set_value (val, Controllable::ForGroup);
-		return;
-	}
-
 	Glib::Threads::RWLock::ReaderLock lm (controls_lock);
 
 	if (_mode & Relative) {

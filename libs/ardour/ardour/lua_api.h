@@ -28,6 +28,7 @@
 
 #include "ardour/libardour_visibility.h"
 
+#include "ardour/midi_model.h"
 #include "ardour/processor.h"
 #include "ardour/session.h"
 
@@ -99,6 +100,15 @@ namespace ARDOUR { namespace LuaAPI {
 	 */
 	float get_processor_param (boost::shared_ptr<Processor> proc, uint32_t which, bool &ok);
 
+	/** reset a processor to its default values (only works for plugins )
+	 *
+	 * This is a wrapper which looks up the Processor by plugin-insert.
+	 *
+	 * @param proc Plugin-Insert
+	 * @returns true on success, false when the processor is not a plugin
+	 */
+	bool reset_processor_to_default (boost::shared_ptr<Processor> proc);
+
 	/** set a plugin control-input parameter value
 	 *
 	 * This is a wrapper around set_processor_param which looks up the Processor by plugin-insert.
@@ -156,6 +166,22 @@ namespace ARDOUR { namespace LuaAPI {
 	 * @returns 4 parameters: red, green, blue, alpha (in range 0..1)
 	 */
 	int hsla_to_rgba (lua_State *lua);
+
+	/**
+	 * A convenience function to expand RGBA parameters from an integer
+	 *
+	 * convert a Canvas::Color (uint32_t 0xRRGGBBAA) into
+	 * double RGBA values which can be passed as parameters to
+	 * Cairo::Context::set_source_rgba
+	 *
+	 * Example:
+	 * @code
+	 * local r, g, b, a = ARDOUR.LuaAPI.color_to_rgba (0x88aa44ff)
+	 * cairo_ctx:set_source_rgba (ARDOUR.LuaAPI.color_to_rgba (0x11336699)
+	 * @endcode
+	 * @returns 4 parameters: red, green, blue, alpha (in range 0..1)
+	 */
+	int color_to_rgba (lua_State *lua);
 
 	/**
 	 * Creates a filename from a series of elements using the correct separator for filenames.
@@ -274,6 +300,9 @@ namespace ARDOUR { namespace LuaAPI {
 
 	boost::shared_ptr<Evoral::Note<Evoral::Beats> >
 		new_noteptr (uint8_t, Evoral::Beats, Evoral::Beats, uint8_t, uint8_t);
+
+	std::list<boost::shared_ptr< Evoral::Note<Evoral::Beats> > >
+		note_list (boost::shared_ptr<ARDOUR::MidiModel>);
 
 } } /* namespace */
 

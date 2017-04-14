@@ -87,6 +87,16 @@ bool RegionSelection::contains (RegionView* rv) const
 	return find (begin(), end(), rv) != end();
 }
 
+bool RegionSelection::contains (boost::shared_ptr<ARDOUR::Region> region) const
+{
+	for (const_iterator r = begin (); r != end (); ++r) {
+		if ((*r)->region () == region) {
+			return true;
+		}
+	}
+	return false;
+}
+
 /** Add a region to the selection.
  *  @param rv Region to add.
  *  @return false if we already had the region or if it cannot be added,
@@ -95,7 +105,7 @@ bool RegionSelection::contains (RegionView* rv) const
 bool
 RegionSelection::add (RegionView* rv)
 {
-        if (!rv->region()->playlist()) {
+	if (!rv->region()->playlist()) {
                 /* not attached to a playlist - selection not allowed.
                    This happens if the user tries to select a region
                    during a capture pass.

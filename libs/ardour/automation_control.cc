@@ -60,6 +60,10 @@ AutomationControl::AutomationControl(ARDOUR::Session&                          s
 	if (_desc.toggled) {
 		set_flags (Controllable::Toggle);
 	}
+	boost::shared_ptr<AutomationList> al = alist();
+	if (al) {
+		al->StateChanged.connect_same_thread (_state_changed_connection, boost::bind (&Session::set_dirty, &_session));
+	}
 }
 
 AutomationControl::~AutomationControl ()
@@ -83,6 +87,16 @@ AutomationControl::get_value() const
 {
 	bool from_list = _list && boost::dynamic_pointer_cast<AutomationList>(_list)->automation_playback();
 	return Control::get_double (from_list, _session.transport_frame());
+}
+
+void
+AutomationControl::pre_realtime_queue_stuff (double val, PBD::Controllable::GroupControlDisposition gcd)
+{
+	if (_group && _group->use_me (gcd)) {
+		_group->pre_realtime_queue_stuff (val);
+	} else {
+		do_pre_realtime_queue_stuff (val);
+	}
 }
 
 void
@@ -159,12 +173,14 @@ AutomationControl::actually_set_value (double value, PBD::Controllable::GroupCon
 	Control::set_double (value, pos, to_list);
 
 	if (old_value != value) {
-		// AutomationType at = (AutomationType) _parameter.type();
-		// std::cerr << "++++ Changed (" << enum_2_string (at) << ", " << enum_2_string (gcd) << ") = " << value
-		// << " (was " << old_value << ") @ " << this << std::endl;
+		//AutomationType at = (AutomationType) _parameter.type();
+		//std::cerr << "++++ Changed (" << enum_2_string (at) << ", " << enum_2_string (gcd) << ") = " << value
+		//<< " (was " << old_value << ") @ " << this << std::endl;
 
 		Changed (true, gcd);
-		_session.set_dirty ();
+		if (!al || !al->automation_playback ()) {
+			_session.set_dirty ();
+		}
 	}
 
 }

@@ -32,9 +32,12 @@
 #include "ardour/session_object.h"
 #include "ardour/libardour_visibility.h"
 
+class StripableColorDialog;
+
 namespace ARDOUR {
 
 class AutomationControl;
+class ReadOnlyControl;
 class GainControl;
 class PeakMeter;
 class SoloControl;
@@ -77,7 +80,7 @@ class LIBARDOUR_API Stripable : public SessionObject {
 
 	/* set just the order */
 
-	void  set_presentation_order (PresentationInfo::order_t, bool notify_class_listeners = true);
+	void  set_presentation_order (PresentationInfo::order_t);
 
 	struct PresentationOrderSorter {
 		bool operator() (boost::shared_ptr<Stripable> a, boost::shared_ptr<Stripable> b) {
@@ -142,7 +145,7 @@ class LIBARDOUR_API Stripable : public SessionObject {
 	virtual boost::shared_ptr<AutomationControl> comp_speed_controllable () const = 0;
 	virtual boost::shared_ptr<AutomationControl> comp_mode_controllable () const = 0;
 	virtual boost::shared_ptr<AutomationControl> comp_makeup_controllable () const = 0;
-	virtual boost::shared_ptr<AutomationControl> comp_redux_controllable () const = 0;
+	virtual boost::shared_ptr<ReadOnlyControl>   comp_redux_controllable () const = 0;
 
 	/* @param mode must be supplied by the comp_mode_controllable(). All other values
 	 * result in undefined behaviour
@@ -182,8 +185,13 @@ class LIBARDOUR_API Stripable : public SessionObject {
 
 	virtual boost::shared_ptr<MonitorProcessor> monitor_control() const = 0;
 
+	StripableColorDialog* active_color_picker() const { return _active_color_picker; }
+	void set_active_color_picker (StripableColorDialog* d) { _active_color_picker = d; }
+
   protected:
 	PresentationInfo _presentation_info;
+	private:
+	StripableColorDialog* _active_color_picker;
 };
 
 }

@@ -279,6 +279,7 @@ public:
 	void ab_plugins (bool forward);
 	void clear_processors (Placement);
 	void all_visible_processors_active (bool);
+	void move_instrument_down (bool postfader = false);
 
 	bool strict_io () const { return _strict_io; }
 	bool set_strict_io (bool);
@@ -359,6 +360,7 @@ public:
 
 	/** the processors have changed; the parameter indicates what changed */
 	PBD::Signal1<void,RouteProcessorChange> processors_changed;
+	PBD::Signal0<void> fan_out; // used to signal the GUI to fan-out (track-creation)
 	PBD::Signal1<void,void*> record_enable_changed;
 	PBD::Signal0<void> processor_latency_changed;
 	/** the metering point has changed */
@@ -518,7 +520,7 @@ public:
 	boost::shared_ptr<AutomationControl> comp_speed_controllable () const;
 	boost::shared_ptr<AutomationControl> comp_mode_controllable () const;
 	boost::shared_ptr<AutomationControl> comp_makeup_controllable () const;
-	boost::shared_ptr<AutomationControl> comp_redux_controllable () const;
+	boost::shared_ptr<ReadOnlyControl>   comp_redux_controllable () const;
 
 	/* @param mode must be supplied by the comp_mode_controllable(). All other values
 	 * result in undefined behaviour

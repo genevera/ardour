@@ -35,17 +35,14 @@ using std::string;
 Stripable::Stripable (Session& s, string const & name, PresentationInfo const & pi)
 	: SessionObject (s, name)
 	, _presentation_info (pi)
+	, _active_color_picker (0)
 {
 }
 
 void
-Stripable::set_presentation_order (PresentationInfo::order_t order, bool notify_class_listeners)
+Stripable::set_presentation_order (PresentationInfo::order_t order)
 {
 	_presentation_info.set_order (order);
-
-	if (notify_class_listeners) {
-		PresentationInfo::Change ();
-	}
 }
 
 int

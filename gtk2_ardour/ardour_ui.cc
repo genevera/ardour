@@ -65,6 +65,7 @@
 #include "pbd/localtime_r.h"
 #include "pbd/pthread_utils.h"
 #include "pbd/replace_all.h"
+#include "pbd/scoped_file_descriptor.h"
 #include "pbd/xml++.h"
 
 #include "gtkmm2ext/application.h"
@@ -141,6 +142,7 @@ typedef uint64_t microseconds_t;
 #include "global_port_matrix.h"
 #include "gui_object.h"
 #include "gui_thread.h"
+#include "idleometer.h"
 #include "keyboard.h"
 #include "keyeditor.h"
 #include "location_ui.h"
@@ -151,6 +153,7 @@ typedef uint64_t microseconds_t;
 #include "missing_plugin_dialog.h"
 #include "mixer_ui.h"
 #include "meterbridge.h"
+#include "meter_patterns.h"
 #include "mouse_cursors.h"
 #include "nsm.h"
 #include "opts.h"
@@ -170,11 +173,11 @@ typedef uint64_t microseconds_t;
 #include "speaker_dialog.h"
 #include "splash.h"
 #include "startup.h"
-#include "theme_manager.h"
 #include "time_axis_view_item.h"
 #include "time_info_box.h"
 #include "timers.h"
 #include "utils.h"
+#include "utils_videotl.h"
 #include "video_server_dialog.h"
 #include "add_video_dialog.h"
 #include "transcode_video_dialog.h"
@@ -280,16 +283,17 @@ ARDOUR_UI::ARDOUR_UI (int *argcp, char **argvp[], const char* localedir)
 	, auto_loop_controllable (new TransportControllable ("transport auto loop", *this, TransportControllable::AutoLoop))
 	, play_selection_controllable (new TransportControllable ("transport play selection", *this, TransportControllable::PlaySelection))
 	, rec_controllable (new TransportControllable ("transport rec-enable", *this, TransportControllable::RecordEnable))
+	, auto_input_button (ArdourButton::led_default_elements)
 	, time_info_box (0)
 	, auto_return_button (ArdourButton::led_default_elements)
 	, follow_edits_button (ArdourButton::led_default_elements)
-	, auto_input_button (ArdourButton::led_default_elements)
 	, auditioning_alert_button (_("Audition"))
 	, solo_alert_button (_("Solo"))
 	, feedback_alert_button (_("Feedback"))
 	, error_alert_button ( ArdourButton::just_led_default_elements )
 	, editor_meter(0)
 	, editor_meter_peak_display()
+	, _suspend_editor_meter_callbacks (false)
 	, _numpad_locate_happening (false)
 	, _session_is_new (false)
 	, last_key_press_time (0)
@@ -305,13 +309,14 @@ ARDOUR_UI::ARDOUR_UI (int *argcp, char **argvp[], const char* localedir)
 	, audio_midi_setup (X_("audio-midi-setup"), _("Audio/MIDI Setup"))
 	, export_video_dialog (X_("video-export"), _("Video Export Dialog"))
 	, lua_script_window (X_("script-manager"), _("Script Manager"))
+	, idleometer (X_("idle-o-meter"), _("Idle'o'Meter"))
 	, session_option_editor (X_("session-options-editor"), _("Properties"), boost::bind (&ARDOUR_UI::create_session_option_editor, this))
 	, add_video_dialog (X_("add-video"), _("Add Video"), boost::bind (&ARDOUR_UI::create_add_video_dialog, this))
 	, bundle_manager (X_("bundle-manager"), _("Bundle Manager"), boost::bind (&ARDOUR_UI::create_bundle_manager, this))
 	, big_clock_window (X_("big-clock"), _("Big Clock"), boost::bind (&ARDOUR_UI::create_big_clock_window, this))
 	, audio_port_matrix (X_("audio-connection-manager"), _("Audio Connections"), boost::bind (&ARDOUR_UI::create_global_port_matrix, this, ARDOUR::DataType::AUDIO))
 	, midi_port_matrix (X_("midi-connection-manager"), _("MIDI Connections"), boost::bind (&ARDOUR_UI::create_global_port_matrix, this, ARDOUR::DataType::MIDI))
-	, key_editor (X_("key-editor"), _("Bindings Editor"), boost::bind (&ARDOUR_UI::create_key_editor, this))
+	, key_editor (X_("key-editor"), _("Keyboard Shortcuts"), boost::bind (&ARDOUR_UI::create_key_editor, this))
 	, video_server_process (0)
 	, splash (0)
 	, have_configure_timeout (false)
@@ -331,6 +336,10 @@ ARDOUR_UI::ARDOUR_UI (int *argcp, char **argvp[], const char* localedir)
 	UIConfiguration::instance().post_gui_init ();
 
 	if (ARDOUR::handle_old_configuration_files (boost::bind (ask_about_configuration_copy, _1, _2, _3))) {
+		{
+			/* "touch" the been-here-before path now that config has been migrated */
+			PBD::ScopedFileDescriptor fout (g_open (been_here_before_path ().c_str(), O_CREAT|O_TRUNC|O_RDWR, 0666));
+		}
 		MessageDialog msg (string_compose (_("Your configuration files were copied. You can now restart %1."), PROGRAM_NAME), true);
 		msg.run ();
 		/* configuration was modified, exit immediately */
@@ -472,6 +481,7 @@ ARDOUR_UI::ARDOUR_UI (int *argcp, char **argvp[], const char* localedir)
 		midi_port_matrix.set_state (*ui_xml, 0);
 		export_video_dialog.set_state (*ui_xml, 0);
 		lua_script_window.set_state (*ui_xml, 0);
+		idleometer.set_state (*ui_xml, 0);
 	}
 
 	/* Separate windows */
@@ -491,6 +501,7 @@ ARDOUR_UI::ARDOUR_UI (int *argcp, char **argvp[], const char* localedir)
 	WM::Manager::instance().register_window (&big_clock_window);
 	WM::Manager::instance().register_window (&audio_port_matrix);
 	WM::Manager::instance().register_window (&midi_port_matrix);
+	WM::Manager::instance().register_window (&idleometer);
 
 	/* do not retain position for add route dialog */
 	add_route_dialog.set_state_mask (WindowProxy::Size);
@@ -746,6 +757,7 @@ ARDOUR_UI::~ARDOUR_UI ()
 		delete luawindow; luawindow = 0;
 		delete editor; editor = 0;
 		delete mixer; mixer = 0;
+		delete rc_option_editor; rc_option_editor = 0; // failed to wrap object warning
 		delete nsm; nsm = 0;
 		delete gui_object_state; gui_object_state = 0;
 		delete main_window_visibility;
@@ -1878,6 +1890,13 @@ ARDOUR_UI::open_session ()
 	session_filter.add_pattern (string_compose(X_("*%1"), ARDOUR::statefile_suffix));
 	session_filter.set_name (string_compose (_("%1 sessions"), PROGRAM_NAME));
 	open_session_selector.add_filter (session_filter);
+
+	FileFilter archive_filter;
+	archive_filter.add_pattern (X_("*.tar.xz"));
+	archive_filter.set_name (_("Session Archives"));
+
+	open_session_selector.add_filter (archive_filter);
+
 	open_session_selector.set_filter (session_filter);
 
 	int response = open_session_selector.run();
@@ -1892,7 +1911,18 @@ ARDOUR_UI::open_session ()
 	bool isnew;
 
 	if (session_path.length() > 0) {
-		if (ARDOUR::find_session (session_path, path, name, isnew) == 0) {
+		int rv = ARDOUR::inflate_session (session_path,
+				Config->get_default_session_parent_dir(), path, name);
+		if (rv == 0) {
+			_session_is_new = false;
+			load_session (path, name);
+		}
+		else if (rv < 0) {
+			MessageDialog msg (_main_window,
+					string_compose (_("Extracting session-archive failed: %1"), inflate_error (rv)));
+			msg.run ();
+		}
+		else if (ARDOUR::find_session (session_path, path, name, isnew) == 0) {
 			_session_is_new = isnew;
 			load_session (path, name);
 		}
@@ -1921,15 +1951,18 @@ ARDOUR_UI::session_add_mixed_track (
 		Plugin::PresetRecord* pset,
 		ARDOUR::PresentationInfo::order_t order)
 {
-	list<boost::shared_ptr<MidiTrack> > tracks;
-
 	if (_session == 0) {
 		warning << _("You cannot add a track without a session already loaded.") << endmsg;
 		return;
 	}
 
+	if (Profile->get_mixbus ()) {
+		strict_io = true;
+	}
+
 	try {
-		tracks = _session->new_midi_track (input, output, instrument, pset, route_group, how_many, name_template, order, ARDOUR::Normal);
+		list<boost::shared_ptr<MidiTrack> > tracks;
+		tracks = _session->new_midi_track (input, output, strict_io, instrument, pset, route_group, how_many, name_template, order, ARDOUR::Normal);
 
 		if (tracks.size() != how_many) {
 			error << string_compose(P_("could not create %1 new mixed track", "could not create %1 new mixed tracks", how_many), how_many) << endmsg;
@@ -1939,12 +1972,6 @@ ARDOUR_UI::session_add_mixed_track (
 	catch (...) {
 		display_insufficient_ports_message ();
 		return;
-	}
-
-	if (strict_io) {
-		for (list<boost::shared_ptr<MidiTrack> >::iterator i = tracks.begin(); i != tracks.end(); ++i) {
-			(*i)->set_strict_io (true);
-		}
 	}
 }
 
@@ -1958,16 +1985,18 @@ ARDOUR_UI::session_add_midi_bus (
 		Plugin::PresetRecord* pset,
 		ARDOUR::PresentationInfo::order_t order)
 {
-	RouteList routes;
-
 	if (_session == 0) {
 		warning << _("You cannot add a track without a session already loaded.") << endmsg;
 		return;
 	}
 
-	try {
+	if (Profile->get_mixbus ()) {
+		strict_io = true;
+	}
 
-		routes = _session->new_midi_route (route_group, how_many, name_template, instrument, pset, PresentationInfo::MidiBus, order);
+	try {
+		RouteList routes;
+		routes = _session->new_midi_route (route_group, how_many, name_template, strict_io, instrument, pset, PresentationInfo::MidiBus, order);
 		if (routes.size() != how_many) {
 			error << string_compose(P_("could not create %1 new Midi Bus", "could not create %1 new Midi Busses", how_many), how_many) << endmsg;
 		}
@@ -1976,12 +2005,6 @@ ARDOUR_UI::session_add_midi_bus (
 	catch (...) {
 		display_insufficient_ports_message ();
 		return;
-	}
-
-	if (strict_io) {
-		for (RouteList::iterator i = routes.begin(); i != routes.end(); ++i) {
-			(*i)->set_strict_io (true);
-		}
 	}
 }
 
@@ -2432,6 +2455,24 @@ ARDOUR_UI::transport_play_preroll ()
 }
 
 void
+ARDOUR_UI::transport_rec_preroll ()
+{
+	if (!_session) {
+		return;
+	}
+	editor->rec_with_preroll ();
+}
+
+void
+ARDOUR_UI::transport_rec_count_in ()
+{
+	if (!_session) {
+		return;
+	}
+	editor->rec_with_count_in ();
+}
+
+void
 ARDOUR_UI::transport_rewind (int option)
 {
 	float current_transport_speed;
@@ -2575,11 +2616,15 @@ void
 ARDOUR_UI::blink_handler (bool blink_on)
 {
 	transport_rec_enable_blink (blink_on);
-	solo_blink (blink_on);
 	sync_blink (blink_on);
+
+	if (!UIConfiguration::instance().get_blink_alert_indicators()) {
+		blink_on = true;
+	}
+	error_blink (blink_on);
+	solo_blink (blink_on);
 	audition_blink (blink_on);
 	feedback_blink (blink_on);
-	error_blink (blink_on);
 }
 
 void
@@ -2668,16 +2713,17 @@ ARDOUR_UI::save_session_as ()
 	*/
 
 	ArdourDialog progress_dialog (_("Save As"), true);
+	ScopedConnection c;
 
 	if (sa.include_media && sa.copy_media) {
 
-		Gtk::Label label;
-		Gtk::ProgressBar progress_bar;
+		Gtk::Label* label = manage (new Gtk::Label());
+		Gtk::ProgressBar* progress_bar = manage (new Gtk::ProgressBar ());
 
-		progress_dialog.get_vbox()->pack_start (label);
-		progress_dialog.get_vbox()->pack_start (progress_bar);
-		label.show ();
-		progress_bar.show ();
+		progress_dialog.get_vbox()->pack_start (*label);
+		progress_dialog.get_vbox()->pack_start (*progress_bar);
+		label->show ();
+		progress_bar->show ();
 
 		/* this signal will be emitted from within this, the calling thread,
 		 * after every file is copied. It provides information on percentage
@@ -2685,9 +2731,7 @@ ARDOUR_UI::save_session_as ()
 		 * copied so far, and the total number to copy.
 		 */
 
-		ScopedConnection c;
-
-		sa.Progress.connect_same_thread (c, boost::bind (&ARDOUR_UI::save_as_progress_update, this, _1, _2, _3, &label, &progress_bar));
+		sa.Progress.connect_same_thread (c, boost::bind (&ARDOUR_UI::save_as_progress_update, this, _1, _2, _3, label, progress_bar));
 
 		progress_dialog.show_all ();
 		progress_dialog.present ();
@@ -2699,9 +2743,18 @@ ARDOUR_UI::save_session_as ()
 		msg.run ();
 	}
 
-	if (!sa.include_media) {
+	/* the logic here may seem odd: why isn't the condition sa.switch_to ?
+	 * the trick is this: if the new session was copy with media included,
+	 * then Session::save_as() will have already done a neat trick to avoid
+	 * us having to unload and load the new state. But if the media was not
+	 * included, then this is required (it avoids us having to otherwise
+	 * drop all references to media (sources).
+	 */
+
+	if (!sa.include_media && sa.switch_to) {
 		unload_session (false);
 		load_session (sa.final_session_folder_name, sa.new_name);
+		hide_splash ();
 	}
 }
 
@@ -3132,7 +3185,7 @@ void
 ARDOUR_UI::load_from_application_api (const std::string& path)
 {
 	/* OS X El Capitan (and probably later) now somehow passes the command
-	   line arguments to an app via the openFile delegate protocol. Ardour 
+	   line arguments to an app via the openFile delegate protocol. Ardour
 	   already does its own command line processing, and having both
 	   pathways active causes crashes. So, if the command line was already
 	   set, do nothing here.
@@ -3305,6 +3358,21 @@ ARDOUR_UI::get_session_parameters (bool quit_on_cancel, bool should_be_new, stri
 		        likely_new = true;
 		}
 
+		if (!likely_new) {
+			int rv = ARDOUR::inflate_session (session_name,
+					Config->get_default_session_parent_dir(), session_path, session_name);
+			if (rv < 0) {
+				MessageDialog msg (session_dialog,
+					string_compose (_("Extracting session-archive failed: %1"), inflate_error (rv)));
+				msg.run ();
+				continue;
+			}
+			else if (rv == 0) {
+				session_dialog.set_provided_session (session_name, session_path);
+			}
+		}
+
+		// XXX check archive, inflate
 		string::size_type suffix = session_name.find (statefile_suffix);
 
 		if (suffix != string::npos) {
@@ -4197,89 +4265,6 @@ ARDOUR_UI::add_route_dialog_finished (int r)
 }
 
 void
-ARDOUR_UI::add_lua_script ()
-{
-	if (!_session) {
-		return;
-	}
-
-	LuaScriptInfoPtr spi;
-	ScriptSelector ss ("Add Lua Session Script", LuaScriptInfo::Session);
-	switch (ss.run ()) {
-		case Gtk::RESPONSE_ACCEPT:
-			spi = ss.script();
-			break;
-		default:
-			return;
-	}
-	ss.hide();
-
-	std::string script = "";
-
-	try {
-		script = Glib::file_get_contents (spi->path);
-	} catch (Glib::FileError e) {
-		string msg = string_compose (_("Cannot read session script '%1': %2"), spi->path, e.what());
-		MessageDialog am (msg);
-		am.run ();
-		return;
-	}
-
-	LuaScriptParamList lsp = LuaScriptParams::script_params (spi, "sess_params");
-	std::vector<std::string> reg = _session->registered_lua_functions ();
-
-	ScriptParameterDialog spd (_("Set Script Parameters"), spi, reg, lsp);
-	switch (spd.run ()) {
-		case Gtk::RESPONSE_ACCEPT:
-			break;
-		default:
-			return;
-	}
-
-	try {
-		_session->register_lua_function (spd.name(), script, lsp);
-	} catch (luabridge::LuaException const& e) {
-		string msg = string_compose (_("Session script '%1' instantiation failed: %2"), spd.name(), e.what ());
-		MessageDialog am (msg);
-		am.run ();
-	} catch (SessionException e) {
-		string msg = string_compose (_("Loading Session script '%1' failed: %2"), spd.name(), e.what ());
-		MessageDialog am (msg);
-		am.run ();
-	}
-}
-
-void
-ARDOUR_UI::remove_lua_script ()
-{
-	if (!_session) {
-		return;
-	}
-	if (_session->registered_lua_function_count () ==  0) {
-		string msg = _("There are no active Lua session scripts present in this session.");
-		MessageDialog am (msg);
-		am.run ();
-		return;
-	}
-
-	std::vector<std::string> reg = _session->registered_lua_functions ();
-	SessionScriptManager sm ("Remove Lua Session Script", reg);
-	switch (sm.run ()) {
-		case Gtk::RESPONSE_ACCEPT:
-			break;
-		default:
-			return;
-	}
-	try {
-		_session->unregister_lua_function (sm.name());
-	} catch (luabridge::LuaException const& e) {
-		string msg = string_compose (_("Session script '%1' removal failed: %2"), sm.name(), e.what ());
-		MessageDialog am (msg);
-		am.run ();
-	}
-}
-
-void
 ARDOUR_UI::stop_video_server (bool ask_confirm)
 {
 	if (!video_server_process && ask_confirm) {
@@ -4347,15 +4332,18 @@ ARDOUR_UI::start_video_server (Gtk::Window* float_window, bool popup_msg)
 
 		std::string icsd_exec = video_server_dialog->get_exec_path();
 		std::string icsd_docroot = video_server_dialog->get_docroot();
-		if (icsd_docroot.empty()) {
 #ifndef PLATFORM_WINDOWS
-			icsd_docroot = X_("/");
-#else
-			icsd_docroot = X_("C:\\");
-#endif
+		if (icsd_docroot.empty()) {
+			icsd_docroot = VideoUtils::video_get_docroot (Config);
 		}
+#endif
 
 		GStatBuf sb;
+#ifdef PLATFORM_WINDOWS
+		if (VideoUtils::harvid_version >= 0x000802 && icsd_docroot.empty()) {
+			/* OK, allow all drive letters */
+		} else
+#endif
 		if (g_lstat (icsd_docroot.c_str(), &sb) != 0 || !S_ISDIR(sb.st_mode)) {
 			warning << _("Specified docroot is not an existing directory.") << endmsg;
 			continue;
@@ -4387,6 +4375,11 @@ ARDOUR_UI::start_video_server (Gtk::Window* float_window, bool popup_msg)
 		argp[8] = 0;
 		stop_video_server();
 
+#ifdef PLATFORM_WINDOWS
+		if (VideoUtils::harvid_version >= 0x000802 && icsd_docroot.empty()) {
+			/* OK, allow all drive letters */
+		} else
+#endif
 		if (icsd_docroot == X_("/") || icsd_docroot == X_("C:\\")) {
 			Config->set_video_advanced_setup(false);
 		} else {
@@ -4740,7 +4733,7 @@ void
 ARDOUR_UI::create_xrun_marker (framepos_t where)
 {
 	if (_session) {
-		Location *location = new Location (*_session, where, where, _("xrun"), Location::IsMark);
+		Location *location = new Location (*_session, where, where, _("xrun"), Location::IsMark, 0);
 		_session->locations()->add (location);
 	}
 }
@@ -5310,6 +5303,52 @@ ARDOUR_UI::session_format_mismatch (std::string xml_path, std::string backup_pat
 	msg.run ();
 }
 
+void
+ARDOUR_UI::add_editor_meter_type_item (Menu_Helpers::MenuList& items, RadioMenuItem::Group& group, string const & name, MeterType type)
+{
+	using namespace Menu_Helpers;
+
+	items.push_back (RadioMenuElem (group, name, sigc::bind (sigc::mem_fun (editor_meter, &LevelMeterHBox::set_meter_type), type)));
+	RadioMenuItem* i = dynamic_cast<RadioMenuItem *> (&items.back ());
+	i->set_active (editor_meter->meter_type () == type);
+}
+
+void
+ARDOUR_UI::popup_editor_meter_menu (GdkEventButton* ev)
+{
+	using namespace Gtk::Menu_Helpers;
+
+	Gtk::Menu* m = manage (new Menu);
+	MenuList& items = m->items ();
+
+	RadioMenuItem::Group group;
+
+	_suspend_editor_meter_callbacks = true;
+	add_editor_meter_type_item (items, group, ArdourMeter::meter_type_string(MeterPeak), MeterPeak);
+	add_editor_meter_type_item (items, group, ArdourMeter::meter_type_string(MeterPeak0dB), MeterPeak0dB);
+	add_editor_meter_type_item (items, group, ArdourMeter::meter_type_string(MeterKrms),  MeterKrms);
+	add_editor_meter_type_item (items, group, ArdourMeter::meter_type_string(MeterIEC1DIN), MeterIEC1DIN);
+	add_editor_meter_type_item (items, group, ArdourMeter::meter_type_string(MeterIEC1NOR), MeterIEC1NOR);
+	add_editor_meter_type_item (items, group, ArdourMeter::meter_type_string(MeterIEC2BBC), MeterIEC2BBC);
+	add_editor_meter_type_item (items, group, ArdourMeter::meter_type_string(MeterIEC2EBU), MeterIEC2EBU);
+	add_editor_meter_type_item (items, group, ArdourMeter::meter_type_string(MeterK20), MeterK20);
+	add_editor_meter_type_item (items, group, ArdourMeter::meter_type_string(MeterK14), MeterK14);
+	add_editor_meter_type_item (items, group, ArdourMeter::meter_type_string(MeterK12), MeterK12);
+	add_editor_meter_type_item (items, group, ArdourMeter::meter_type_string(MeterVU),  MeterVU);
+
+	m->popup (ev->button, ev->time);
+	_suspend_editor_meter_callbacks = false;
+}
+
+bool
+ARDOUR_UI::editor_meter_button_press (GdkEventButton* ev)
+{
+	if (ev->button == 3 && editor_meter) {
+		popup_editor_meter_menu (ev);
+		return true;
+	}
+	return false;
+}
 
 void
 ARDOUR_UI::reset_peak_display ()
@@ -5344,10 +5383,12 @@ ARDOUR_UI::do_audio_midi_setup (uint32_t desired_sample_rate)
 	audio_midi_setup->set_desired_sample_rate (desired_sample_rate);
 	audio_midi_setup->set_position (WIN_POS_CENTER);
 
-	if (Config->get_try_autostart_engine () || getenv ("TRY_AUTOSTART_ENGINE")) {
-		audio_midi_setup->try_autostart ();
-		if (ARDOUR::AudioEngine::instance()->running()) {
-			return 0;
+	if (desired_sample_rate != 0) {
+		if (Config->get_try_autostart_engine () || getenv ("TRY_AUTOSTART_ENGINE")) {
+			audio_midi_setup->try_autostart ();
+			if (ARDOUR::AudioEngine::instance()->running()) {
+				return 0;
+			}
 		}
 	}
 
@@ -5516,7 +5557,7 @@ ARDOUR_UI::setup_toplevel_window (Gtk::Window& window, const string& name, void*
 	}
 
 	window.set_title (title.get_string());
-	window.set_wmclass (string_compose (X_("%1_%1"), downcase (PROGRAM_NAME), downcase (name)), PROGRAM_NAME);
+	window.set_wmclass (string_compose (X_("%1_%1"), downcase (std::string(PROGRAM_NAME)), downcase (name)), PROGRAM_NAME);
 
 	window.set_flags (CAN_FOCUS);
 	window.add_events (Gdk::KEY_PRESS_MASK|Gdk::KEY_RELEASE_MASK);

@@ -88,7 +88,7 @@ OSC_GUI::OSC_GUI (OSC& p)
 	++n;
 
 	// port entry box
-	label = manage (new Gtk::Label(_("Manual Port:")));
+	label = manage (new Gtk::Label(_("Reply Manual Port:")));
 	label->set_alignment(1, .5);
 	table->attach (*label, 0, 1, n, n+1, AttachOptions(FILL|EXPAND), AttachOptions(0));
 	table->attach (port_entry, 1, 2, n, n+1, AttachOptions(FILL|EXPAND), AttachOptions(0), 0, 0);
@@ -206,7 +206,7 @@ OSC_GUI::OSC_GUI (OSC& p)
 	sttable->attach (midi_tracks, 1, 2, stn, stn+1, AttachOptions(FILL|EXPAND), AttachOptions(0), 0, 0);
 	++stn;
 
-	label = manage (new Gtk::Label(_("Audio Buses:")));
+	label = manage (new Gtk::Label(_("Audio Busses:")));
 	label->set_alignment(1, .5);
 	sttable->attach (*label, 0, 1, stn, stn+1, AttachOptions(FILL|EXPAND), AttachOptions(0));
 	sttable->attach (audio_buses, 1, 2, stn, stn+1, AttachOptions(FILL|EXPAND), AttachOptions(0), 0, 0);
@@ -218,7 +218,7 @@ OSC_GUI::OSC_GUI (OSC& p)
 	sttable->attach (audio_auxes, 1, 2, stn, stn+1, AttachOptions(FILL|EXPAND), AttachOptions(0), 0, 0);
 	++stn;
 
-	label = manage (new Gtk::Label(_("Midi Buses:")));
+	label = manage (new Gtk::Label(_("Midi Busses:")));
 	label->set_alignment(1, .5);
 	sttable->attach (*label, 0, 1, stn, stn+1, AttachOptions(FILL|EXPAND), AttachOptions(0));
 	sttable->attach (midi_buses, 1, 2, stn, stn+1, AttachOptions(FILL|EXPAND), AttachOptions(0), 0, 0);
@@ -266,7 +266,6 @@ OSC_GUI::OSC_GUI (OSC& p)
 	fbtable->set_col_spacings (6);
 	fbtable->set_border_width (12);
 
-	// show our url
 	label = manage (new Gtk::Label(_("Select Desired Types of Feedback")));
 	fbtable->attach (*label, 0, 2, fn, fn+1, AttachOptions(FILL|EXPAND), AttachOptions(0));
 	++fn;

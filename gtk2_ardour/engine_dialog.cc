@@ -280,6 +280,7 @@ EngineControl::EngineControl ()
 	start_stop_button.set_name ("generic button");
 	start_stop_button.set_can_focus(true);
 	start_stop_button.set_can_default(true);
+	start_stop_button.set_act_on_release (false);
 
 	update_devices_button.signal_clicked.connect (mem_fun (*this, &EngineControl::update_devices_button_clicked));
 	update_devices_button.set_sensitive (false);
@@ -416,9 +417,6 @@ void
 EngineControl::on_show ()
 {
 	ArdourDialog::on_show ();
-	if (Splash::instance()) {
-		Splash::instance()->hide ();
-	}
 	if (!ARDOUR::AudioEngine::instance()->current_backend() || !ARDOUR::AudioEngine::instance()->running()) {
 		// re-check _have_control (jackd running) see #6041
 		backend_changed ();
@@ -778,6 +776,7 @@ EngineControl::update_sensitivity ()
 
 	bool valid = true;
 	size_t devices_available = 0;
+	bool engine_running = ARDOUR::AudioEngine::instance()->running();
 
 	if (backend->use_separate_input_and_output_devices ()) {
 		devices_available += get_popdown_string_count (input_device_combo);
@@ -795,12 +794,12 @@ EngineControl::update_sensitivity ()
 	} else {
 		input_latency.set_sensitive (true);
 		output_latency.set_sensitive (true);
-		input_channels.set_sensitive (true);
-		output_channels.set_sensitive (true);
+		input_channels.set_sensitive (!engine_running);
+		output_channels.set_sensitive (!engine_running);
 	}
 
 	if (get_popdown_string_count (buffer_size_combo) > 0) {
-		if (!ARDOUR::AudioEngine::instance()->running()) {
+		if (!engine_running) {
 			buffer_size_combo.set_sensitive (valid);
 		} else if (backend->can_change_sample_rate_when_running()) {
 			buffer_size_combo.set_sensitive (valid || !_have_control);
@@ -826,7 +825,7 @@ EngineControl::update_sensitivity ()
 
 	if (get_popdown_string_count (sample_rate_combo) > 0) {
 		bool allow_to_set_rate = false;
-		if (!ARDOUR::AudioEngine::instance()->running()) {
+		if (!engine_running) {
 			if (!ARDOUR_UI::instance()->session_loaded) {
 				// engine is not running, no session loaded -> anything goes.
 				allow_to_set_rate = true;
@@ -842,7 +841,7 @@ EngineControl::update_sensitivity ()
 	}
 
 	if (get_popdown_string_count (nperiods_combo) > 0) {
-		if (!ARDOUR::AudioEngine::instance()->running()) {
+		if (!engine_running) {
 			nperiods_combo.set_sensitive (true);
 		} else {
 			nperiods_combo.set_sensitive (false);
@@ -854,7 +853,7 @@ EngineControl::update_sensitivity ()
 	if (_have_control) {
 		start_stop_button.set_sensitive(true);
 		start_stop_button.show();
-		if (ARDOUR::AudioEngine::instance()->running()) {
+		if (engine_running) {
 			start_stop_button.set_text("Stop");
 			update_devices_button.set_sensitive(false);
 			use_buffered_io_button.set_sensitive(false);
@@ -882,7 +881,7 @@ EngineControl::update_sensitivity ()
 		start_stop_button.hide();
 	}
 
-	if (ARDOUR::AudioEngine::instance()->running() && _have_control) {
+	if (engine_running && _have_control) {
 		input_device_combo.set_sensitive (false);
 		output_device_combo.set_sensitive (false);
 		device_combo.set_sensitive (false);
@@ -897,6 +896,8 @@ EngineControl::update_sensitivity ()
 			driver_combo.set_sensitive (false);
 		}
 	}
+
+	midi_option_combo.set_sensitive (!engine_running);
 }
 
 void
@@ -1799,6 +1800,7 @@ bool EngineControl::equivalent_states (const EngineControl::State& state1,
 	return false;
 }
 
+// sort active first, then most recently used to the beginning of the list
 bool
 EngineControl::state_sort_cmp (const State &a, const State &b) {
 	if (a->active) {
@@ -1808,7 +1810,7 @@ EngineControl::state_sort_cmp (const State &a, const State &b) {
 		return false;
 	}
 	else {
-		return a->lru < b->lru;
+		return a->lru > b->lru;
 	}
 }
 
@@ -2731,9 +2733,6 @@ EngineControl::start_stop_button_clicked ()
 		start_engine ();
 		if (!ARDOUR_UI::instance()->session_loaded) {
 			ArdourDialog::on_response (RESPONSE_OK);
-			if (Splash::instance()) {
-				Splash::instance()->pop_front ();
-			}
 		}
 	}
 }
@@ -3147,9 +3146,6 @@ EngineControl::connect_disconnect_click()
 		start_engine ();
 		if (!ARDOUR_UI::instance()->session_loaded) {
 			ArdourDialog::on_response (RESPONSE_OK);
-			if (Splash::instance()) {
-				Splash::instance()->pop_front ();
-			}
 		}
 	}
 }

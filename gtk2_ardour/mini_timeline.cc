@@ -72,8 +72,8 @@ MiniTimeline::MiniTimeline ()
 
 	ARDOUR_UI_UTILS::set_tooltip (*this,
 			string_compose (_("<b>Navigation Timeline</b>. Use left-click to locate to time position or marker; scroll-wheel to jump, hold %1 for fine gained and %2 + %3 for extra-fine grained control. Right-click to set display range. The display unit is defined by the primary clock."),
-				Gtkmm2ext::Keyboard::Keyboard::primary_modifier_name(),
-				Gtkmm2ext::Keyboard::Keyboard::primary_modifier_name (),
+				Gtkmm2ext::Keyboard::primary_modifier_name(),
+				Gtkmm2ext::Keyboard::primary_modifier_name (),
 				Gtkmm2ext::Keyboard::secondary_modifier_name ()));
 }
 
@@ -348,7 +348,7 @@ MiniTimeline::draw_mark (cairo_t* cr, int x0, int x1, const std::string& label, 
 	_layout->get_pixel_size (lw, lh);
 	int rw = std::min (x1, x0 + w2 + lw + 2);
 
-	if (_pointer_y >= 0 && _pointer_y <= y + h && _pointer_x >= x0 && _pointer_x <= rw) {
+	if (_pointer_y >= 0 && _pointer_y <= y + h && _pointer_x >= x0 - w2 && _pointer_x <= rw) {
 		prelight = true;
 	}
 
@@ -377,7 +377,7 @@ MiniTimeline::draw_mark (cairo_t* cr, int x0, int x1, const std::string& label, 
 
 	// draw marker on top
 	cairo_move_to (cr, x0 - .5, y + .5);
-	cairo_rel_line_to (cr, -w2 , 0 );
+	cairo_rel_line_to (cr, -w2 , 0);
 	cairo_rel_line_to (cr, 0, h0);
 	cairo_rel_line_to (cr, w2, h1);
 	cairo_rel_line_to (cr, w2, -h1);
@@ -390,6 +390,91 @@ MiniTimeline::draw_mark (cairo_t* cr, int x0, int x1, const std::string& label, 
 
 	return rw;
 }
+
+int
+MiniTimeline::draw_edge (cairo_t* cr, int x0, int x1, bool left, const std::string& label, bool& prelight)
+{
+	int h = _marker_height;
+	int w2 = (h - 1) / 4;
+
+	const int y = PADDING;
+	const double yc = rint (h * .5);
+	const double dy = h * .4;
+
+	bool with_label;
+	int lw, lh, lx;
+	_layout->set_text (label);
+	_layout->get_pixel_size (lw, lh);
+
+	double px, dx;
+	if (left) {
+		if (x0 + 2 * w2 + lw + 2 < x1) {
+			x1 = std::min (x1, x0 + 2 * w2 + lw + 2);
+			with_label = true;
+		} else {
+			x1 = std::min (x1, x0 + 2 * w2);
+			with_label = false;
+		}
+		px = x0;
+		dx = 2 * w2;
+		lx = x0 + dx;
+	} else {
+		with_label = false;
+		if (x1 - 2 * w2 - lw - 2 > x0) {
+			x0 = std::max (x0, x1 - 2 * w2 - lw - 2);
+			with_label = true;
+		} else {
+			x0 = std::max (x0, x1 - 2 * w2);
+			with_label = false;
+		}
+		px = x1;
+		dx = -2 * w2;
+		lx = x1 + dx - lw - 2;
+	}
+
+	if (x1 - x0 < 2 * w2) {
+		return left ? x0 : x1;
+	}
+
+	if (_pointer_y >= 0 && _pointer_y <= y + h && _pointer_x >= x0 && _pointer_x <= x1) {
+		prelight = true;
+	}
+
+	// TODO cache in set_colors()
+	uint32_t color = UIConfiguration::instance().color (
+			prelight ? "entered marker" : "location marker");
+
+	double r, g, b, a;
+	ArdourCanvas::color_to_rgba (color, r, g, b, a);
+
+	if (with_label) {
+		const int y = PADDING;
+		cairo_save (cr);
+		cairo_rectangle (cr, lx, y, lw + 2, h);
+		cairo_set_source_rgba (cr, r, g, b, 0.5); // this should use a shaded color
+		cairo_fill_preserve (cr);
+		cairo_clip (cr);
+
+		// marker label
+		cairo_move_to (cr, lx + 1, y + .5 * (h - lh));
+		cairo_set_source_rgb (cr, 0, 0, 0);
+		pango_cairo_show_layout (cr, _layout->gobj());
+		cairo_restore (cr);
+	}
+
+	// draw arrow
+	cairo_move_to (cr, px - .5, PADDING + yc - .5);
+	cairo_rel_line_to (cr, dx , dy);
+	cairo_rel_line_to (cr, 0, -2. * dy);
+	cairo_close_path (cr);
+	cairo_set_source_rgba (cr, r, g, b, 1.0);
+	cairo_set_line_width (cr, 1.0);
+	cairo_stroke_preserve (cr);
+	cairo_fill (cr);
+
+	return left ? x1 : x0;
+}
+
 
 struct LocationMarker {
 	LocationMarker (const std::string& l, framepos_t w)
@@ -405,8 +490,9 @@ struct LocationMarkerSort {
 };
 
 void
-MiniTimeline::render (cairo_t* cr, cairo_rectangle_t*)
+MiniTimeline::render (Cairo::RefPtr<Cairo::Context> const& ctx, cairo_rectangle_t*)
 {
+	cairo_t* cr = ctx->cobj();
 	// TODO cache, set_colors()
 	ArdourCanvas::Color base = UIConfiguration::instance().color ("ruler base");
 	ArdourCanvas::Color text = UIConfiguration::instance().color ("ruler text");
@@ -415,26 +501,28 @@ MiniTimeline::render (cairo_t* cr, cairo_rectangle_t*)
 		return;
 	}
 
-	Gtkmm2ext::rounded_rectangle (cr, 0, 0, get_width(), get_height(), 4);
+	const int width = get_width ();
+	const int height = get_height ();
+
+	Gtkmm2ext::rounded_rectangle (cr, 0, 0, width, height, 4);
 	ArdourCanvas::set_source_rgba(cr, base);
 	cairo_fill (cr);
 
-	Gtkmm2ext::rounded_rectangle (cr, PADDING, PADDING, get_width() - PADDING - PADDING, get_height() - PADDING - PADDING, 4);
+	Gtkmm2ext::rounded_rectangle (cr, PADDING, PADDING, width - PADDING - PADDING, height - PADDING - PADDING, 4);
 	cairo_clip (cr);
 
 	if (_session == 0) {
 		return;
 	}
 
-
 	/* time */
 	const framepos_t p = _last_update_frame;
 	const framepos_t lower = (std::max ((framepos_t)0, (p - _time_span_samples)) / _time_granularity) * _time_granularity;
 
-	int dot_left = get_width() * .5 + (lower - p) * _px_per_sample;
+	int dot_left = width * .5 + (lower - p) * _px_per_sample;
 	for (int i = 0; i < 2 + _n_labels; ++i) {
 		framepos_t when = lower + i * _time_granularity;
-		double xpos = get_width() * .5 + (when - p) * _px_per_sample;
+		double xpos = width * .5 + (when - p) * _px_per_sample;
 
 		// TODO round to nearest display TC in +/- 1px
 		// prefer to display BBT |0  or .0
@@ -444,7 +532,7 @@ MiniTimeline::render (cairo_t* cr, cairo_rectangle_t*)
 		_layout->get_pixel_size (lw, lh);
 
 		int x0 = xpos - lw / 2.0;
-		int y0 = get_height() - PADDING - _time_height;
+		int y0 = height - PADDING - _time_height;
 
 		draw_dots (cr, dot_left, x0, y0 + _time_height * .5, text);
 
@@ -453,7 +541,7 @@ MiniTimeline::render (cairo_t* cr, cairo_rectangle_t*)
 		pango_cairo_show_layout (cr, _layout->gobj());
 		dot_left = x0 + lw;
 	}
-	draw_dots (cr, dot_left, get_width(), get_height() - PADDING - _time_height * .5, text);
+	draw_dots (cr, dot_left, width, height - PADDING - _time_height * .5, text);
 
 	/* locations */
 	framepos_t lmin = std::max ((framepos_t)0, (p - _time_span_samples));
@@ -475,14 +563,8 @@ MiniTimeline::render (cairo_t* cr, cairo_rectangle_t*)
 	const Locations::LocationList& ll (_session->locations ()->list ());
 	for (Locations::LocationList::const_iterator l = ll.begin(); l != ll.end(); ++l) {
 		if ((*l)->is_session_range ()) {
-			framepos_t when = (*l)->start ();
-			if (when >= lmin && when <= lmax) {
-				lm.push_back (LocationMarker(_("start"), when));
-			}
-			when = (*l)->end ();
-			if (when >= lmin && when <= lmax) {
-				lm.push_back (LocationMarker(_("end"), when));
-			}
+			lm.push_back (LocationMarker(_("start"), (*l)->start ()));
+			lm.push_back (LocationMarker(_("end"), (*l)->end ()));
 			continue;
 		}
 
@@ -490,11 +572,7 @@ MiniTimeline::render (cairo_t* cr, cairo_rectangle_t*)
 			continue;
 		}
 
-		framepos_t when = (*l)->start ();
-		if (when < lmin || when > lmax) {
-			continue;
-		}
-		lm.push_back (LocationMarker((*l)->name(), when));
+		lm.push_back (LocationMarker((*l)->name(), (*l)->start ()));
 	}
 
 	_jumplist.clear ();
@@ -502,28 +580,73 @@ MiniTimeline::render (cairo_t* cr, cairo_rectangle_t*)
 	LocationMarkerSort location_marker_sort;
 	std::sort (lm.begin(), lm.end(), location_marker_sort);
 
+	std::vector<LocationMarker>::const_iterator outside_left = lm.end();
+	std::vector<LocationMarker>::const_iterator outside_right = lm.end();
+	int left_limit = 0;
+	int right_limit = width * .5 + mw;
 	int id = 0;
+
 	for (std::vector<LocationMarker>::const_iterator l = lm.begin(); l != lm.end(); ++id) {
 		framepos_t when = (*l).when;
-		int x0 = floor (get_width() * .5 + (when - p) * _px_per_sample);
-		int x1 = get_width();
+		if (when < lmin) {
+			outside_left = l;
+			if (++l != lm.end()) {
+				left_limit = floor (width * .5 + ((*l).when - p) * _px_per_sample) - 1 - mw;
+			} else {
+				left_limit = width * .5 - mw;
+			}
+			continue;
+		}
+		if (when > lmax) {
+			outside_right = l;
+			break;
+		}
+		int x0 = floor (width * .5 + (when - p) * _px_per_sample);
+		int x1 = width;
 		const std::string& label = (*l).label;
 		if (++l != lm.end()) {
-			x1 = floor (get_width() * .5 + ((*l).when - p) * _px_per_sample) - 1 - mw;
+			x1 = floor (width * .5 + ((*l).when - p) * _px_per_sample) - 1 - mw;
 		}
 		bool prelight = false;
 		x1 = draw_mark (cr, x0, x1, label, prelight);
 		_jumplist.push_back (JumpRange (x0 - mw, x1, when, prelight));
+		right_limit = std::max (x1, right_limit);
 	}
 
+	if (outside_left != lm.end ()) {
+		if (left_limit > 3 * mw + PADDING) {
+			int x0 = PADDING + 1;
+			int x1 = left_limit - mw;
+			bool prelight = false;
+			x1 = draw_edge (cr, x0, x1, true, (*outside_left).label, prelight);
+			if (x0 != x1) {
+				_jumplist.push_back (JumpRange (x0, x1, (*outside_left).when, prelight));
+				right_limit = std::max (x1, right_limit);
+			}
+		}
+	}
+
+	if (outside_right != lm.end ()) {
+		if (right_limit + PADDING < width - 3 * mw) {
+			int x0 = right_limit;
+			int x1 = width - PADDING;
+			bool prelight = false;
+			x0 = draw_edge (cr, x0, x1, false, (*outside_right).label, prelight);
+			if (x0 != x1) {
+				_jumplist.push_back (JumpRange (x0, x1, (*outside_right).when, prelight));
+			}
+		}
+	}
+
+
 	/* playhead on top */
-	int xc = get_width () * 0.5f;
+	int xc = width * 0.5f;
 	cairo_set_line_width (cr, 1.0);
 	cairo_set_source_rgb (cr, 1, 0, 0); // playhead color
 	cairo_move_to (cr, xc - .5, 0);
-	cairo_rel_line_to (cr, 0, get_height ());
+	cairo_rel_line_to (cr, 0, height);
 	cairo_stroke (cr);
-	cairo_move_to (cr, xc - .5, get_height ());
+	cairo_move_to (cr, xc - .5, height);
 	cairo_rel_line_to (cr, -3,  0);
 	cairo_rel_line_to (cr,  3, -4);
 	cairo_rel_line_to (cr,  3,  4);
@@ -562,21 +685,15 @@ MiniTimeline::build_minitl_context_menu ()
 	}
 }
 
-void
-MiniTimeline::show_minitl_context_menu ()
-{
-	if (_minitl_context_menu == 0) {
-		build_minitl_context_menu ();
-	}
-	_minitl_context_menu->popup (1, gtk_get_current_event_time());
-}
-
 bool
 MiniTimeline::on_button_press_event (GdkEventButton *ev)
 {
 	if (Gtkmm2ext::Keyboard::is_context_menu_event (ev)) {
 		if (_session) {
-			show_minitl_context_menu ();
+			if (_minitl_context_menu == 0) {
+				build_minitl_context_menu ();
+			}
+			_minitl_context_menu->popup (ev->button, ev->time);
 		}
 		return true;
 	}
@@ -587,13 +704,14 @@ bool
 MiniTimeline::on_button_release_event (GdkEventButton *ev)
 {
 	if (!_session) { return true; }
+	if (_session->actively_recording ()) { return true; }
 	if (ev->y < 0 || ev->y > get_height () || ev->x < 0 || ev->x > get_width ()) {
 		return true;
 	}
 
 	if (ev->y <= PADDING + _marker_height) {
 		for (JumpList::const_iterator i = _jumplist.begin (); i != _jumplist.end(); ++i) {
-			if (i->left < ev->x && ev->x < i->right) {
+			if (i->left <= ev->x && ev->x <= i->right) {
 				_session->request_locate (i->to, _session->transport_rolling ());
 				return true;
 			}
@@ -612,6 +730,7 @@ bool
 MiniTimeline::on_motion_notify_event (GdkEventMotion *ev)
 {
 	if (!_session) { return true; }
+	if (_session->actively_recording ()) { return true; }
 
 	_pointer_x = ev->x;
 	_pointer_y = ev->y;
@@ -656,6 +775,7 @@ bool
 MiniTimeline::on_scroll_event (GdkEventScroll *ev)
 {
 	if (!_session) { return true; }
+	if (_session->actively_recording ()) { return true; }
 	const framecnt_t time_span = _session->config.get_minitimeline_span ();
 	framepos_t when = _session->audible_frame ();
 

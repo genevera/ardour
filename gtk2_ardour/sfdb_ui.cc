@@ -143,7 +143,9 @@ SoundFileBox::SoundFileBox (bool /*persistent*/)
 	  main_box (false, 6),
 	  autoplay_btn (_("Auto-play")),
 	  seek_slider(0,1000,1),
-	  _seeking(false)
+	  _seeking(false),
+	  _src_quality (SrcBest),
+	  _import_position (ImportAtTimestamp)
 
 {
 	set_name (X_("SoundFileBox"));
@@ -344,7 +346,7 @@ SoundFileBox::setup_labels (const string& filename)
 				tempomap_value.set_text (string_compose (_("%1/%2 \u2669 = %3"),
 				                                         t->numerator,
 				                                         t->denominator,
-				                                         (1000000 / t->microseconds_per_quarter_note) * 60));
+				                                         t->tempo ()));
 				break;
 			}
 			default:

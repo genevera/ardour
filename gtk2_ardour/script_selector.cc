@@ -42,22 +42,22 @@ ScriptSelector::ScriptSelector (std::string title, LuaScriptInfo::ScriptType typ
 
 	l = manage (new Label (_("<b>Type:</b>"), Gtk::ALIGN_END, Gtk::ALIGN_CENTER, false));
 	l->set_use_markup ();
-	t->attach (*l, 0, 1, ty, ty+1);
-	t->attach (_type, 1, 2, ty, ty+1);
+	t->attach (*l, 0, 1, ty, ty+1, FILL|EXPAND, SHRINK);
+	t->attach (_type, 1, 2, ty, ty+1, FILL|EXPAND, SHRINK);
 	++ty;
 
 	l = manage (new Label (_("<b>Author:</b>"), Gtk::ALIGN_END, Gtk::ALIGN_CENTER, false));
 	l->set_use_markup ();
-	t->attach (*l, 0, 1, ty, ty+1);
-	t->attach (_author, 1, 2, ty, ty+1);
+	t->attach (*l, 0, 1, ty, ty+1, FILL|EXPAND, SHRINK);
+	t->attach (_author, 1, 2, ty, ty+1, FILL|EXPAND, SHRINK);
 	++ty;
 
-	l = manage (new Label (_("<b>Description:</b>"), Gtk::ALIGN_END, Gtk::ALIGN_CENTER, false));
-	l->set_use_markup ();
-	t->attach (*l, 0, 1, ty, ty+1);
-	t->attach (_description, 1, 2, ty, ty+1);
+	Frame* f = manage(new Frame (_("Description")));
+	f->add (_description);
+	t->attach (*f, 0, 2, ty, ty+1);
 	++ty;
 
+	_description.set_padding (5, 5);
 	_description.set_line_wrap();
 
 	get_vbox()->set_spacing (6);
@@ -176,17 +176,21 @@ ScriptParameterDialog::ScriptParameterDialog (std::string title,
 	}
 
 	for (size_t i = 0; i < _lsp.size (); ++i) {
-		CheckButton* c = manage (new CheckButton (_lsp[i]->title));
 		Entry* e = manage (new Entry());
-		c->set_active (!_lsp[i]->optional); // also if default ??
-		c->set_sensitive (_lsp[i]->optional);
-		e->set_text (_lsp[i]->dflt);
-		e->set_sensitive (c->get_active ());
+		if (_lsp[i]->optional) {
+			CheckButton* c = manage (new CheckButton (_lsp[i]->title));
+			c->set_active (!_lsp[i]->dflt.empty());
+			c->signal_toggled().connect (sigc::bind (sigc::mem_fun (*this, &ScriptParameterDialog::active_changed), i, c, e));
+			t->attach (*c, 0, 1, ty, ty+1);
+		} else {
+			Label* l = manage (new Label (_lsp[i]->title, Gtk::ALIGN_LEFT));
+			t->attach (*l, 0, 1, ty, ty+1);
+		}
 
-		c->signal_toggled().connect (sigc::bind (sigc::mem_fun (*this, &ScriptParameterDialog::active_changed), i, c, e));
+		e->set_text (_lsp[i]->dflt);
+		e->set_sensitive (!_lsp[i]->dflt.empty());
 		e->signal_changed().connect (sigc::bind (sigc::mem_fun (*this, &ScriptParameterDialog::value_changed), i, e));
 
-		t->attach (*c, 0, 1, ty, ty+1);
 		t->attach (*e, 1, 2, ty, ty+1);
 		++ty;
 	}

@@ -124,7 +124,7 @@ Controllable::get_state ()
 	id().print (buf, sizeof (buf));
 	node->add_property (X_("id"), buf);
 	node->add_property (X_("flags"), enum_2_string (_flags));
-	snprintf (buf, sizeof (buf), "%2.12f", get_value());
+	snprintf (buf, sizeof (buf), "%2.12f", get_save_value());
         node->add_property (X_("value"), buf);
 
 	if (_extra_xml) {
@@ -133,7 +133,6 @@ Controllable::get_state ()
 
 	return *node;
 }
-
 
 int
 Controllable::set_state (const XMLNode& node, int /*version*/)
@@ -146,7 +145,7 @@ Controllable::set_state (const XMLNode& node, int /*version*/)
 	set_id (node);
 
 	if ((prop = node.property (X_("flags"))) != 0) {
-		_flags = (Flag) string_2_enum (prop->value(), _flags);
+		_flags = (Flag) ((_flags & Controllable::RealTime) | string_2_enum (prop->value(), _flags));
 	}
 
 	if ((prop = node.property (X_("value"))) != 0) {

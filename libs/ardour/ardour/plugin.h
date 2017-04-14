@@ -256,6 +256,9 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 	 */
 	PBD::Signal0<void> PresetDirty;
 
+	/** Emitted for preset-load to set a control-port */
+	PBD::Signal2<void, uint32_t, float> PresetPortSetValue;
+
 	virtual bool has_editor () const = 0;
 
 	/** Emitted when a parameter is altered by something outside of our
@@ -330,7 +333,7 @@ protected:
 	/* Called when a parameter of the plugin is changed outside of this
 	 * host's control (typical via a plugin's own GUI/editor)
 	 */
-	void parameter_changed_externally (uint32_t which, float val);
+	virtual void parameter_changed_externally (uint32_t which, float val);
 
 	/* should be overridden by plugin API specific derived types to
 	 * actually implement changing the parameter. The derived type should
@@ -357,8 +360,6 @@ private:
 
 	/** Fill _presets with our presets */
 	virtual void find_presets () = 0;
-
-	void update_presets (std::string src_unique_id, Plugin* src );
 
 	/** Add state to an existing XMLNode */
 	virtual void add_state (XMLNode *) const = 0;

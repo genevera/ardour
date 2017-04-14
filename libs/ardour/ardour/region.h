@@ -215,6 +215,7 @@ class LIBARDOUR_API Region
 	void set_length (framecnt_t, const int32_t sub_num);
 	void set_start (framepos_t);
 	void set_position (framepos_t, int32_t sub_num = 0);
+	void set_position_music (double qn);
 	void set_initial_position (framepos_t);
 	void special_set_position (framepos_t);
 	virtual void update_after_tempo_map_change (bool send_change = true);
@@ -325,6 +326,13 @@ class LIBARDOUR_API Region
 		// no transients, but its OK
 	}
 
+	/* wrapper to the above for easy access throug Lua */
+	AnalysisFeatureList transients () {
+		AnalysisFeatureList rv;
+		get_transients (rv);
+		return rv;
+	}
+
 	bool has_transients () const;
 
 	virtual int separate_by_channel (ARDOUR::Session&,
@@ -346,7 +354,7 @@ class LIBARDOUR_API Region
 	Region (boost::shared_ptr<const Region>);
 
 	/** Construct a region from another region, at an offset within that region */
-	Region (boost::shared_ptr<const Region>, frameoffset_t start_offset, const int32_t sub_num);
+	Region (boost::shared_ptr<const Region>, ARDOUR::MusicFrame start_offset);
 
 	/** Construct a region as a copy of another region, but with different sources */
 	Region (boost::shared_ptr<const Region>, const SourceList&);
@@ -364,6 +372,7 @@ class LIBARDOUR_API Region
 	virtual int _set_state (const XMLNode&, int version, PBD::PropertyChange& what_changed, bool send_signal);
 	void post_set (const PBD::PropertyChange&);
 	virtual void set_position_internal (framepos_t pos, bool allow_bbt_recompute, const int32_t sub_num);
+	virtual void set_position_music_internal (double qn);
 	virtual void set_length_internal (framecnt_t, const int32_t sub_num);
 	virtual void set_start_internal (framecnt_t, const int32_t sub_num = 0);
 	bool verify_start_and_length (framepos_t, framecnt_t&);

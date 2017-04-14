@@ -148,10 +148,10 @@ class PublicEditor : public Gtkmm2ext::Tabbable {
 	 * Snap a value according to the current snap setting.
 	 * ensure_snap overrides SnapOff and magnetic snap
 	 */
-	virtual void snap_to (framepos_t&       first,
-	                      ARDOUR::RoundMode direction = ARDOUR::RoundNearest,
-	                      bool              for_mark  = false,
-			      bool              ensure_snap = false) = 0;
+	virtual void snap_to (ARDOUR::MusicFrame& first,
+	                      ARDOUR::RoundMode   direction = ARDOUR::RoundNearest,
+	                      bool                for_mark  = false,
+			      bool                ensure_snap = false) = 0;
 
 	/** Undo some transactions.
 	 * @param n Number of transactions to undo.
@@ -192,6 +192,10 @@ class PublicEditor : public Gtkmm2ext::Tabbable {
 	 */
 	virtual void consider_auditioning (boost::shared_ptr<ARDOUR::Region> r) = 0;
 
+	/* import dialogs -> ardour-ui ?! */
+	virtual void external_audio_dialog () = 0;
+	virtual void session_import_dialog () = 0;
+
 	virtual void new_region_from_selection () = 0;
 	virtual void separate_region_from_selection () = 0;
 
@@ -200,13 +204,18 @@ class PublicEditor : public Gtkmm2ext::Tabbable {
 	virtual framepos_t playhead_cursor_sample () const = 0;
 	virtual double sample_to_pixel (framepos_t frame) const = 0;
 	virtual double sample_to_pixel_unrounded (framepos_t frame) const = 0;
+
 	virtual Selection& get_selection () const = 0;
 	virtual bool get_selection_extents (framepos_t &start, framepos_t &end) const = 0;
 	virtual Selection& get_cut_buffer () const = 0;
-	virtual void track_mixer_selection () = 0;
+
+	virtual void set_selection (std::list<Selectable*>, Selection::Operation) = 0;
+
 	virtual bool extend_selection_to_track (TimeAxisView&) = 0;
 	virtual void play_selection () = 0;
 	virtual void play_with_preroll () = 0;
+	virtual void rec_with_preroll () = 0;
+	virtual void rec_with_count_in () = 0;
 	virtual void maybe_locate_with_edit_preroll (framepos_t location) = 0;
 	virtual void goto_nth_marker (int nth) = 0;
 	virtual void trigger_script (int nth) = 0;
@@ -217,6 +226,28 @@ class PublicEditor : public Gtkmm2ext::Tabbable {
 	virtual void remove_tracks () = 0;
 	virtual void set_loop_range (framepos_t start, framepos_t end, std::string cmd) = 0;
 	virtual void set_punch_range (framepos_t start, framepos_t end, std::string cmd) = 0;
+
+	virtual void jump_forward_to_mark () = 0;
+	virtual void jump_backward_to_mark () = 0;
+
+	virtual void set_session_start_from_playhead () = 0;
+	virtual void set_session_end_from_playhead () = 0;
+
+	virtual void toggle_location_at_playhead_cursor () = 0;
+
+	virtual void nudge_forward (bool next, bool force_playhead) = 0;
+	virtual void nudge_backward (bool next, bool force_playhead) = 0;
+
+	virtual void playhead_forward_to_grid () = 0;
+	virtual void playhead_backward_to_grid () = 0;
+
+	virtual void keyboard_selection_begin ( Editing::EditIgnoreOption = Editing::EDIT_IGNORE_NONE) = 0;
+	virtual void keyboard_selection_finish (bool add, Editing::EditIgnoreOption = Editing::EDIT_IGNORE_NONE) = 0;
+
+	virtual void set_punch_start_from_edit_point () = 0;
+	virtual void set_punch_end_from_edit_point () = 0;
+	virtual void set_loop_start_from_edit_point () = 0;
+	virtual void set_loop_end_from_edit_point () = 0;
 
 	virtual Editing::MouseMode effective_mouse_mode () const = 0;
 
@@ -255,10 +286,11 @@ class PublicEditor : public Gtkmm2ext::Tabbable {
 	virtual void set_selected_track (TimeAxisView&, Selection::Operation op = Selection::Set, bool no_remove = false) = 0;
 	virtual void set_selected_mixer_strip (TimeAxisView&) = 0;
 	virtual void hide_track_in_display (TimeAxisView* tv, bool apply_to_selection = false) = 0;
+	virtual void show_track_in_display (TimeAxisView* tv, bool move_into_view = false) = 0;
 
-        virtual void set_stationary_playhead (bool yn) = 0;
-        virtual void toggle_stationary_playhead () = 0;
-        virtual bool stationary_playhead() const = 0;
+	virtual void set_stationary_playhead (bool yn) = 0;
+	virtual void toggle_stationary_playhead () = 0;
+	virtual bool stationary_playhead() const = 0;
 
 	/** Set whether the editor should follow the playhead.
 	 * @param yn true to follow playhead, otherwise false.
@@ -294,7 +326,7 @@ class PublicEditor : public Gtkmm2ext::Tabbable {
 	virtual void restore_editing_space () = 0;
 	virtual framepos_t get_preferred_edit_position (Editing::EditIgnoreOption = Editing::EDIT_IGNORE_NONE, bool from_context_menu = false, bool from_outside_canvas = false) = 0;
 	virtual void toggle_meter_updating() = 0;
-	virtual void split_regions_at (framepos_t, RegionSelection&, const int32_t sub_num, bool snap) = 0;
+	virtual void split_regions_at (ARDOUR::MusicFrame, RegionSelection&, bool snap) = 0;
 	virtual void split_region_at_points (boost::shared_ptr<ARDOUR::Region>, ARDOUR::AnalysisFeatureList&, bool can_ferret, bool select_new = false) = 0;
 	virtual void mouse_add_new_marker (framepos_t where, bool is_cd=false) = 0;
 	virtual void foreach_time_axis_view (sigc::slot<void,TimeAxisView&>) = 0;
@@ -316,15 +348,29 @@ class PublicEditor : public Gtkmm2ext::Tabbable {
 	virtual void set_video_timeline_height (const int h) = 0;
 	virtual void embed_audio_from_video (std::string, framepos_t n = 0, bool lock_position_to_video = true) = 0;
 
+	virtual bool track_selection_change_without_scroll () const = 0;
+
 	virtual RouteTimeAxisView* get_route_view_by_route_id (const PBD::ID& id) const = 0;
 
 	virtual void get_equivalent_regions (RegionView* rv, std::vector<RegionView*>&, PBD::PropertyID) const = 0;
+	virtual RegionView* regionview_from_region (boost::shared_ptr<ARDOUR::Region>) const = 0;
+	virtual RouteTimeAxisView* rtav_from_route (boost::shared_ptr<ARDOUR::Route>) const = 0;
 
 	sigc::signal<void> ZoomChanged;
 	sigc::signal<void> Realized;
 	sigc::signal<void,framepos_t> UpdateAllTransportClocks;
 
         static sigc::signal<void> DropDownKeys;
+
+	struct RegionAction {
+		Glib::RefPtr<Gtk::Action> action;
+		Editing::RegionActionTarget target;
+
+		RegionAction (Glib::RefPtr<Gtk::Action> a, Editing::RegionActionTarget tgt)
+			: action (a), target (tgt) {}
+	};
+
+	std::map<std::string,RegionAction> region_action_map;
 
 	Glib::RefPtr<Gtk::ActionGroup> editor_actions;
 	Glib::RefPtr<Gtk::ActionGroup> editor_menu_actions;
@@ -409,10 +455,10 @@ class PublicEditor : public Gtkmm2ext::Tabbable {
 	virtual ARDOUR::Location* find_location_from_marker (ArdourMarker *, bool &) const = 0;
 	virtual ArdourMarker* find_marker_from_location_id (PBD::ID const &, bool) const = 0;
 
-	virtual void snap_to_with_modifier (framepos_t &      first,
-	                                    GdkEvent const *  ev,
-	                                    ARDOUR::RoundMode direction = ARDOUR::RoundNearest,
-	                                    bool              for_mark  = false) = 0;
+	virtual void snap_to_with_modifier (ARDOUR::MusicFrame& first,
+	                                    GdkEvent const *    ev,
+	                                    ARDOUR::RoundMode   direction = ARDOUR::RoundNearest,
+	                                    bool                for_mark  = false) = 0;
 
 	virtual void get_regions_at (RegionSelection &, framepos_t where, TrackViewList const &) const = 0;
 	virtual void get_regions_after (RegionSelection&, framepos_t where, const TrackViewList& ts) const = 0;

@@ -41,8 +41,11 @@ class ArdourButton : public CairoWidget , public Gtkmm2ext::Activatable
 		unused = 0x10,
 		Menu = 0x20,
 		Inactive = 0x40, // no _action is defined AND state is not used
-		VectorIcon = 0x80, // tentative, see commit message
+		VectorIcon = 0x80,
+		IconRenderCallback = 0x100,
 	};
+
+	typedef void (* rendercallback_t) (cairo_t*, int, int, uint32_t, void*);
 
 	static Element default_elements;
 	static Element led_default_elements;
@@ -75,6 +78,7 @@ class ArdourButton : public CairoWidget , public Gtkmm2ext::Activatable
 
 	Gtkmm2ext::ArdourIcon::Icon icon() const { return _icon; }
 	void set_icon (Gtkmm2ext::ArdourIcon::Icon);
+	void set_icon (rendercallback_t, void*);
 
 	void set_corner_radius (float);
 
@@ -123,7 +127,7 @@ class ArdourButton : public CairoWidget , public Gtkmm2ext::Activatable
 	float char_avg_pixel_width() { if (_char_pixel_width < 1) recalc_char_pixel_geometry() ; return _char_avg_pixel_width; }
 
 	protected:
-	void render (cairo_t *, cairo_rectangle_t *);
+	void render (Cairo::RefPtr<Cairo::Context> const&, cairo_rectangle_t*);
 	void on_size_request (Gtk::Requisition* req);
 	void on_size_allocate (Gtk::Allocation&);
 	void on_style_changed (const Glib::RefPtr<Gtk::Style>&);
@@ -135,6 +139,7 @@ class ArdourButton : public CairoWidget , public Gtkmm2ext::Activatable
 	bool on_focus_in_event (GdkEventFocus*);
 	bool on_focus_out_event (GdkEventFocus*);
 	bool on_key_release_event (GdkEventKey *);
+	bool on_key_press_event (GdkEventKey *);
 
 	void controllable_changed ();
 	PBD::ScopedConnection watch_connection;
@@ -147,6 +152,8 @@ class ArdourButton : public CairoWidget , public Gtkmm2ext::Activatable
 	bool                        _markup;
 	Element                     _elements;
 	Gtkmm2ext::ArdourIcon::Icon _icon;
+	rendercallback_t            _icon_render_cb;
+	void*                       _icon_render_cb_data;
 	Tweaks                      _tweaks;
 	BindingProxy                binding_proxy;
 

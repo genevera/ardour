@@ -67,7 +67,6 @@
 #include "speaker_dialog.h"
 #include "splash.h"
 #include "sfdb_ui.h"
-#include "theme_manager.h"
 #include "time_info_box.h"
 #include "timers.h"
 
@@ -117,6 +116,7 @@ ARDOUR_UI::set_session (Session *s)
 	secondary_clock->set_session (s);
 	big_clock->set_session (s);
 	video_timeline->set_session (s);
+	lua_script_window->set_session (s);
 
 	/* sensitize menu bar options that are now valid */
 
@@ -160,6 +160,7 @@ ARDOUR_UI::set_session (Session *s)
 	blink_connection = Timers::blink_connect (sigc::mem_fun(*this, &ARDOUR_UI::blink_handler));
 
 	_session->SaveSessionRequested.connect (_session_connections, MISSING_INVALIDATOR, boost::bind (&ARDOUR_UI::save_session_at_its_request, this, _1), gui_context());
+	_session->StateSaved.connect (_session_connections, MISSING_INVALIDATOR, boost::bind (&ARDOUR_UI::update_title, this), gui_context());
 	_session->RecordStateChanged.connect (_session_connections, MISSING_INVALIDATOR, boost::bind (&ARDOUR_UI::record_state_changed, this), gui_context());
 	_session->StepEditStatusChange.connect (_session_connections, MISSING_INVALIDATOR, boost::bind (&ARDOUR_UI::step_edit_status_change, this, _1), gui_context());
 	_session->TransportStateChange.connect (_session_connections, MISSING_INVALIDATOR, boost::bind (&ARDOUR_UI::map_transport_state, this), gui_context());
@@ -171,6 +172,7 @@ ARDOUR_UI::set_session (Session *s)
 	_session->locations()->added.connect (_session_connections, MISSING_INVALIDATOR, boost::bind (&ARDOUR_UI::handle_locations_change, this, _1), gui_context());
 	_session->locations()->removed.connect (_session_connections, MISSING_INVALIDATOR, boost::bind (&ARDOUR_UI::handle_locations_change, this, _1), gui_context());
 	_session->config.ParameterChanged.connect (_session_connections, MISSING_INVALIDATOR, boost::bind (&ARDOUR_UI::session_parameter_changed, this, _1), gui_context ());
+	_session->auto_loop_location_changed.connect (_session_connections, MISSING_INVALIDATOR, boost::bind (&ARDOUR_UI::set_loop_sensitivity, this), gui_context ());
 
 	/* Clocks are on by default after we are connected to a session, so show that here.
 	*/
@@ -222,10 +224,12 @@ ARDOUR_UI::set_session (Session *s)
 			editor_meter = new LevelMeterHBox(_session);
 			editor_meter->set_meter (_session->master_out()->shared_peak_meter().get());
 			editor_meter->clear_meters();
-			editor_meter->set_type (_session->master_out()->meter_type());
+			editor_meter->set_meter_type (_session->master_out()->meter_type());
 			editor_meter->setup_meters (30, 10, 6);
 			editor_meter->show();
 			meter_box.pack_start(*editor_meter);
+
+			editor_meter->ButtonPress.connect_same_thread (editor_meter_connection, boost::bind (&ARDOUR_UI::editor_meter_button_press, this, _1));
 		}
 
 		ArdourMeter::ResetAllPeakDisplays.connect (sigc::mem_fun(*this, &ARDOUR_UI::reset_peak_display));

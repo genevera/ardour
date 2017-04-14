@@ -144,10 +144,10 @@ GroupTabs::on_button_press_event (GdkEventButton* ev)
 
 		RouteGroup* g = t ? t->group : 0;
 
-		if (Keyboard::modifier_state_equals (ev->state, Keyboard::PrimaryModifier) && g) {
-			/* edit */
-			RouteGroupDialog d (g, false);
-			d.present ();
+		if (Keyboard::modifier_state_equals (ev->state, Keyboard::TertiaryModifier) && g) {
+			remove_group (g);
+		} else if (Keyboard::modifier_state_equals (ev->state, Keyboard::PrimaryModifier) && g) {
+			edit_group (g);
 		} else {
 			Menu* m = get_menu (g, true);
 			if (m) {
@@ -241,8 +241,9 @@ GroupTabs::on_button_release_event (GdkEventButton*)
 }
 
 void
-GroupTabs::render (cairo_t* cr, cairo_rectangle_t*)
+GroupTabs::render (Cairo::RefPtr<Cairo::Context> const& ctx, cairo_rectangle_t*)
 {
+	cairo_t* cr = ctx->cobj();
 	if (_dragging == 0) {
 		_tabs = compute_tabs ();
 	}
@@ -306,7 +307,7 @@ GroupTabs::add_new_from_items (Menu_Helpers::MenuList& items)
 	using namespace Menu_Helpers;
 	Menu *new_from;
 
-	new_from = new Menu;
+	new_from = manage (new Menu);
 	{
 		MenuList& f = new_from->items ();
 		f.push_back (MenuElem (_("Selection..."), sigc::bind (sigc::mem_fun (*this, &GroupTabs::new_from_selection), false)));
@@ -315,7 +316,7 @@ GroupTabs::add_new_from_items (Menu_Helpers::MenuList& items)
 	}
 	items.push_back (MenuElem (_("Create New Group From..."), *new_from));
 
-	new_from = new Menu;
+	new_from = manage (new Menu);
 	{
 		MenuList& f = new_from->items ();
 		f.push_back (MenuElem (_("Selection..."), sigc::bind (sigc::mem_fun (*this, &GroupTabs::new_from_selection), true)));
@@ -355,15 +356,18 @@ GroupTabs::get_menu (RouteGroup* g, bool in_tab_area)
 
 		items.push_back (SeparatorElem());
 
-		vca_menu = new Menu;
-		MenuList& f (vca_menu->items());
-		f.push_back (MenuElem ("New", sigc::bind (sigc::mem_fun (*this, &GroupTabs::assign_group_to_master), 0, g, true)));
+		if (g->has_control_master()) {
+			items.push_back (MenuElem (_("Drop Group from VCA..."), sigc::bind (sigc::mem_fun (*this, &GroupTabs::unassign_group_to_master), g->group_master_number(), g)));
+		} else {
+			vca_menu = manage (new Menu);
+			MenuList& f (vca_menu->items());
+			f.push_back (MenuElem ("New", sigc::bind (sigc::mem_fun (*this, &GroupTabs::assign_group_to_master), 0, g, true)));
 
-		for (VCAList::const_iterator v = vcas.begin(); v != vcas.end(); ++v) {
-			f.push_back (MenuElem (string_compose ("VCA %1", (*v)->number()), sigc::bind (sigc::mem_fun (*this, &GroupTabs::assign_group_to_master), (*v)->number(), g, true)));
+			for (VCAList::const_iterator v = vcas.begin(); v != vcas.end(); ++v) {
+				f.push_back (MenuElem ((*v)->name().empty() ? string_compose ("VCA %1", (*v)->number()) : (*v)->name(), sigc::bind (sigc::mem_fun (*this, &GroupTabs::assign_group_to_master), (*v)->number(), g, true)));
+			}
+			items.push_back (MenuElem (_("Assign Group to VCA..."), *vca_menu));
 		}
-		items.push_back (MenuElem (_("Assign Group to Control Master..."), *vca_menu));
-
 
 		items.push_back (SeparatorElem());
 
@@ -389,38 +393,38 @@ GroupTabs::get_menu (RouteGroup* g, bool in_tab_area)
 
 	items.push_back (SeparatorElem());
 
-	vca_menu = new Menu;
+	vca_menu = manage (new Menu);
 	{
 		MenuList& f (vca_menu->items());
 		f.push_back (MenuElem ("New", sigc::bind (sigc::mem_fun (*this, &GroupTabs::assign_selection_to_master), 0)));
 		for (VCAList::const_iterator v = vcas.begin(); v != vcas.end(); ++v) {
-			f.push_back (MenuElem (string_compose ("VCA %1", (*v)->number()), sigc::bind (sigc::mem_fun (*this, &GroupTabs::assign_selection_to_master), (*v)->number())));
+			f.push_back (MenuElem ((*v)->name().empty() ? string_compose ("VCA %1", (*v)->number()) : (*v)->name(), sigc::bind (sigc::mem_fun (*this, &GroupTabs::assign_selection_to_master), (*v)->number())));
 		}
 	}
 
-	items.push_back (MenuElem (_("Assign Selection to Control Master..."), *vca_menu));
+	items.push_back (MenuElem (_("Assign Selection to VCA..."), *vca_menu));
 
-	vca_menu = new Menu;
+	vca_menu = manage (new Menu);
 	{
 		MenuList& f (vca_menu->items());
-		f.push_back (MenuElem ("New", sigc::bind (sigc::mem_fun (*this, &GroupTabs::assign_selection_to_master), 0)));
+		f.push_back (MenuElem ("New", sigc::bind (sigc::mem_fun (*this, &GroupTabs::assign_recenabled_to_master), 0)));
 		for (VCAList::const_iterator v = vcas.begin(); v != vcas.end(); ++v) {
-			f.push_back (MenuElem (string_compose ("VCA %1", (*v)->number()), sigc::bind (sigc::mem_fun (*this, &GroupTabs::assign_selection_to_master), (*v)->number())));
+			f.push_back (MenuElem ((*v)->name().empty() ? string_compose ("VCA %1", (*v)->number()) : (*v)->name(), sigc::bind (sigc::mem_fun (*this, &GroupTabs::assign_recenabled_to_master), (*v)->number())));
 		}
 
 	}
-	items.push_back (MenuElem (_("Assign Record Enabled to Control Master..."), *vca_menu));
+	items.push_back (MenuElem (_("Assign Record Enabled to VCA..."), *vca_menu));
 
-	vca_menu = new Menu;
+	vca_menu = manage (new Menu);
 	{
 		MenuList& f (vca_menu->items());
-		f.push_back (MenuElem ("New", sigc::bind (sigc::mem_fun (*this, &GroupTabs::assign_selection_to_master), 0)));
+		f.push_back (MenuElem ("New", sigc::bind (sigc::mem_fun (*this, &GroupTabs::assign_soloed_to_master), 0)));
 		for (VCAList::const_iterator v = vcas.begin(); v != vcas.end(); ++v) {
-			f.push_back (MenuElem (string_compose ("VCA %1", (*v)->number()), sigc::bind (sigc::mem_fun (*this, &GroupTabs::assign_selection_to_master), (*v)->number())));
+			f.push_back (MenuElem ((*v)->name().empty() ? string_compose ("VCA %1", (*v)->number()) : (*v)->name(), sigc::bind (sigc::mem_fun (*this, &GroupTabs::assign_soloed_to_master), (*v)->number())));
 		}
 
 	}
-	items.push_back (MenuElem (_("Assign Soloed to Control Master...")));
+	items.push_back (MenuElem (_("Assign Soloed to VCA..."), *vca_menu));
 
 	items.push_back (SeparatorElem());
 	items.push_back (MenuElem (_("Enable All Groups"), sigc::mem_fun(*this, &GroupTabs::activate_all)));
@@ -444,8 +448,8 @@ GroupTabs::assign_group_to_master (uint32_t which, RouteGroup* group, bool renam
 			return;
 		}
 
-		/* VCAs use 1-based counting. Get most recently created VCA... */
-		which = _session->vca_manager().n_vcas();
+		/* Get most recently created VCA... */
+		which = _session->vca_manager().vcas().back()->number();
 	}
 
 	master = _session->vca_manager().vca_by_number (which);
@@ -466,6 +470,26 @@ GroupTabs::assign_group_to_master (uint32_t which, RouteGroup* group, bool renam
 }
 
 void
+GroupTabs::unassign_group_to_master (uint32_t which, RouteGroup* group) const
+{
+	if (!_session || !group) {
+		return;
+	}
+
+	boost::shared_ptr<VCA> master = _session->vca_manager().vca_by_number (which);
+
+	if (!master) {
+		/* should never happen; if it does, basically something deeply
+		   odd happened, no reason to tell user because there's no
+		   sensible explanation.
+		*/
+		return;
+	}
+
+	group->unassign_master (master);
+}
+
+void
 GroupTabs::assign_some_to_master (uint32_t which, RouteList rl)
 {
 	if (!_session) {
@@ -480,8 +504,8 @@ GroupTabs::assign_some_to_master (uint32_t which, RouteList rl)
 			return;
 		}
 
-		/* VCAs use 1-based counting. Get most recently created VCA... */
-		which = _session->vca_manager().n_vcas();
+		/* Get most recently created VCA... */
+		which = _session->vca_manager().vcas().back()->number();
 	}
 
 	master = _session->vca_manager().vca_by_number (which);
@@ -500,7 +524,7 @@ GroupTabs::assign_some_to_master (uint32_t which, RouteList rl)
 	}
 
 	for (RouteList::iterator r = rl.begin(); r != rl.end(); ++r) {
-		(*r)->assign (master);
+		(*r)->assign (master, false);
 	}
 }
 
@@ -666,6 +690,9 @@ GroupTabs::collect (RouteGroup* g)
 
 	int diff = 0;
 	int coll = -1;
+
+	PresentationInfo::ChangeSuspender cs;
+
 	while (i != group_routes->end() && j != routes->end()) {
 
 		PresentationInfo::order_t const k = (*j)->presentation_info ().order();
@@ -679,21 +706,19 @@ GroupTabs::collect (RouteGroup* g)
 				--diff;
 			}
 
-			(*j)->set_presentation_order (coll, false);
+			(*j)->set_presentation_order (coll);
 
 			++coll;
 			++i;
 
 		} else {
 
-			(*j)->set_presentation_order (k + diff, false);
+			(*j)->set_presentation_order (k + diff);
 
 		}
 
 		++j;
 	}
-
-	_session->notify_presentation_info_change ();
 }
 
 void
@@ -724,10 +749,11 @@ GroupTabs::remove_group (RouteGroup* g)
 	RouteList rl (*(g->route_list().get()));
 	_session->remove_route_group (*g);
 
+	PresentationInfo::ChangeSuspender cs;
+
 	for (RouteList::iterator i = rl.begin(); i != rl.end(); ++i) {
 		(*i)->presentation_info().PropertyChanged (Properties::color);
 	}
-	PresentationInfo::Change (); // notify summary & port-matrix
 }
 
 /** Set the color of the tab of a route group */
@@ -841,7 +867,6 @@ GroupTabs::route_added_to_route_group (RouteGroup*, boost::weak_ptr<Route> w)
 	}
 
 	r->presentation_info().PropertyChanged (Properties::color);
-	PresentationInfo::Change (); // notify summary & port-matrix
 
 	set_dirty ();
 }
@@ -857,7 +882,6 @@ GroupTabs::route_removed_from_route_group (RouteGroup*, boost::weak_ptr<Route> w
 	}
 
 	r->presentation_info().PropertyChanged (Properties::color);
-	PresentationInfo::Change (); // notify summary & port-matrix
 
 	set_dirty ();
 }
@@ -865,8 +889,9 @@ GroupTabs::route_removed_from_route_group (RouteGroup*, boost::weak_ptr<Route> w
 void
 GroupTabs::emit_gui_changed_for_members (RouteGroup* rg)
 {
+	PresentationInfo::ChangeSuspender cs;
+
 	for (RouteList::iterator i = rg->route_list()->begin(); i != rg->route_list()->end(); ++i) {
 		(*i)->presentation_info().PropertyChanged (Properties::color);
 	}
-	PresentationInfo::Change (); // notify summary & port-matrix
 }

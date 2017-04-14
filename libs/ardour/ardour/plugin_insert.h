@@ -34,6 +34,7 @@
 #include "ardour/parameter_descriptor.h"
 #include "ardour/plugin.h"
 #include "ardour/processor.h"
+#include "ardour/readonly_control.h"
 #include "ardour/sidechain.h"
 #include "ardour/automation_control.h"
 
@@ -117,6 +118,7 @@ class LIBARDOUR_API PluginInsert : public Processor
 	bool reset_map (bool emit = true);
 	bool sanitize_maps ();
 	bool check_inplace ();
+	bool configured () const { return _configured; }
 
 	// these are ports visible on the outside
 	ChanCount output_streams() const;
@@ -241,6 +243,8 @@ class LIBARDOUR_API PluginInsert : public Processor
 	}
 
 	PluginType type ();
+
+	boost::shared_ptr<ReadOnlyControl> control_output (uint32_t) const;
 
 	std::string describe_parameter (Evoral::Parameter param);
 
@@ -373,6 +377,11 @@ class LIBARDOUR_API PluginInsert : public Processor
 	void latency_changed ();
 	bool _latency_changed;
 	uint32_t _bypass_port;
+
+	typedef std::map<uint32_t, boost::shared_ptr<ReadOnlyControl> >CtrlOutMap;
+	CtrlOutMap _control_outputs;
+
+	void preset_load_set_value (uint32_t, float);
 };
 
 } // namespace ARDOUR

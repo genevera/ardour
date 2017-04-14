@@ -37,8 +37,10 @@
 #include "luainstance.h"
 #include "luasignal.h"
 #include "marker.h"
+#include "region_view.h"
 #include "processor_box.h"
 #include "time_axis_view.h"
+#include "time_axis_view_item.h"
 #include "selection.h"
 #include "script_selector.h"
 #include "timers.h"
@@ -308,6 +310,11 @@ class PangoLayout {
 			pango_cairo_show_layout (c->cobj (), _layout->gobj());
 		}
 
+		void layout_cairo_path (Cairo::Context* c) {
+			pango_cairo_update_layout (c->cobj (), _layout->gobj());
+			pango_cairo_layout_path (c->cobj (), _layout->gobj());
+		}
+
 	private:
 		Glib::RefPtr<Pango::Layout> _layout;
 };
@@ -491,6 +498,7 @@ LuaInstance::bind_cairo (lua_State* L)
 		.addFunction ("get_text", &LuaCairo::PangoLayout::get_text)
 		.addFunction ("set_text", &LuaCairo::PangoLayout::set_text)
 		.addFunction ("show_in_cairo_context", &LuaCairo::PangoLayout::show_in_cairo_context)
+		.addFunction ("layout_cairo_path", &LuaCairo::PangoLayout::layout_cairo_path)
 		.addFunction ("set_markup", &LuaCairo::PangoLayout::set_markup)
 		.addFunction ("set_width", &LuaCairo::PangoLayout::set_width)
 		.addFunction ("set_ellipsize", &LuaCairo::PangoLayout::set_ellipsize)
@@ -567,17 +575,38 @@ LuaInstance::register_classes (lua_State* L)
 		.addFunction ("_type", &ArdourMarker::type)
 		.endClass ()
 
-#if 0
 		.beginClass <AxisView> ("AxisView")
 		.endClass ()
+
 		.deriveClass <TimeAxisView, AxisView> ("TimeAxisView")
 		.endClass ()
-		.deriveClass <RouteTimeAxisView, TimeAxisView> ("RouteTimeAxisView")
+
+		.beginClass <Selectable> ("Selectable")
 		.endClass ()
-#endif
+
+		.deriveClass <TimeAxisViewItem, Selectable> ("TimeAxisViewItem")
+		.endClass ()
+
+		.deriveClass <RegionView, TimeAxisViewItem> ("RegionView")
+		.endClass ()
+
+		.deriveClass <RouteUI, Selectable> ("RouteUI")
+		.endClass ()
+
+		.deriveClass <RouteTimeAxisView, RouteUI> ("RouteTimeAxisView")
+		.addCast<TimeAxisView> ("to_timeaxisview")
+		.endClass ()
+
+		// std::list<Selectable*>
+		.beginStdCPtrList <Selectable> ("SelectionList")
+		.endClass ()
+
+		// std::list<TimeAxisView*>
+		.beginStdCPtrList <TimeAxisView> ("TrackViewStdList")
+		.endClass ()
+
 
 		.beginClass <RegionSelection> ("RegionSelection")
-		.addFunction ("clear_all", &RegionSelection::clear_all)
 		.addFunction ("start", &RegionSelection::start)
 		.addFunction ("end_frame", &RegionSelection::end_frame)
 		.addFunction ("n_midi_regions", &RegionSelection::n_midi_regions)
@@ -593,8 +622,9 @@ LuaInstance::register_classes (lua_State* L)
 		.deriveClass <MarkerSelection, std::list<ArdourMarker*> > ("MarkerSelection")
 		.endClass ()
 
-		.beginClass <TrackViewList> ("TrackViewList")
-		.addFunction ("routelist", &TrackViewList::routelist) // XXX check windows binding (libardour)
+		.deriveClass <TrackViewList, std::list<TimeAxisView*> > ("TrackViewList")
+		.addFunction ("contains", &TrackViewList::contains)
+		.addFunction ("routelist", &TrackViewList::routelist)
 		.endClass ()
 
 		.deriveClass <TrackSelection, TrackViewList> ("TrackSelection")
@@ -640,6 +670,8 @@ LuaInstance::register_classes (lua_State* L)
 		.addFunction ("get_cut_buffer", &PublicEditor::get_cut_buffer)
 		.addRefFunction ("get_selection_extents", &PublicEditor::get_selection_extents)
 
+		.addFunction ("set_selection", &PublicEditor::set_selection)
+
 		.addFunction ("play_selection", &PublicEditor::play_selection)
 		.addFunction ("play_with_preroll", &PublicEditor::play_with_preroll)
 		.addFunction ("maybe_locate_with_edit_preroll", &PublicEditor::maybe_locate_with_edit_preroll)
@@ -670,21 +702,23 @@ LuaInstance::register_classes (lua_State* L)
 		.addFunction ("get_current_zoom", &PublicEditor::get_current_zoom)
 		.addFunction ("reset_zoom", &PublicEditor::reset_zoom)
 
-#if 0 // These need TimeAxisView* which isn't exposed, yet
-		.addFunction ("playlist_selector", &PublicEditor::playlist_selector)
 		.addFunction ("clear_playlist", &PublicEditor::clear_playlist)
 		.addFunction ("new_playlists", &PublicEditor::new_playlists)
 		.addFunction ("copy_playlists", &PublicEditor::copy_playlists)
 		.addFunction ("clear_playlists", &PublicEditor::clear_playlists)
-#endif
 
 		.addFunction ("select_all_tracks", &PublicEditor::select_all_tracks)
 		.addFunction ("deselect_all", &PublicEditor::deselect_all)
-#if 0
+
+#if 0 // TimeAxisView&  can't be bound (pure virtual fn)
 		.addFunction ("set_selected_track", &PublicEditor::set_selected_track)
 		.addFunction ("set_selected_mixer_strip", &PublicEditor::set_selected_mixer_strip)
-		.addFunction ("hide_track_in_display", &PublicEditor::hide_track_in_display)
+		.addFunction ("ensure_time_axis_view_is_visible", &PublicEditor::ensure_time_axis_view_is_visible)
 #endif
+		.addFunction ("hide_track_in_display", &PublicEditor::hide_track_in_display)
+		.addFunction ("show_track_in_display", &PublicEditor::show_track_in_display)
+
+		.addFunction ("regionview_from_region", &PublicEditor::regionview_from_region)
 		.addFunction ("set_stationary_playhead", &PublicEditor::set_stationary_playhead)
 		.addFunction ("stationary_playhead", &PublicEditor::stationary_playhead)
 		.addFunction ("set_follow_playhead", &PublicEditor::set_follow_playhead)
@@ -695,7 +729,6 @@ LuaInstance::register_classes (lua_State* L)
 		.addFunction ("current_page_samples", &PublicEditor::current_page_samples)
 		.addFunction ("visible_canvas_height", &PublicEditor::visible_canvas_height)
 		.addFunction ("temporal_zoom_step", &PublicEditor::temporal_zoom_step)
-		//.addFunction ("ensure_time_axis_view_is_visible", &PublicEditor::ensure_time_axis_view_is_visible)
 		.addFunction ("override_visible_track_count", &PublicEditor::override_visible_track_count)
 
 		.addFunction ("scroll_tracks_down_line", &PublicEditor::scroll_tracks_down_line)
@@ -727,14 +760,14 @@ LuaInstance::register_classes (lua_State* L)
 		.addFunction ("set_video_timeline_height", &PublicEditor::set_video_timeline_height)
 
 #if 0
-		.addFunction ("get_route_view_by_route_id", &PublicEditor::get_route_view_by_route_id)
 		.addFunction ("get_equivalent_regions", &PublicEditor::get_equivalent_regions)
-
-		.addFunction ("axis_view_from_route", &PublicEditor::axis_view_from_route)
-		.addFunction ("axis_views_from_routes", &PublicEditor::axis_views_from_routes)
-		.addFunction ("get_track_views", &PublicEditor::get_track_views)
 		.addFunction ("drags", &PublicEditor::drags)
 #endif
+
+		.addFunction ("get_route_view_by_route_id", &PublicEditor::get_route_view_by_route_id)
+		.addFunction ("get_track_views", &PublicEditor::get_track_views)
+		.addFunction ("rtav_from_route", &PublicEditor::rtav_from_route)
+		.addFunction ("axis_views_from_routes", &PublicEditor::axis_views_from_routes)
 
 		.addFunction ("center_screen", &PublicEditor::center_screen)
 
@@ -775,6 +808,13 @@ LuaInstance::register_classes (lua_State* L)
 		.addConst ("LoopEnd", ArdourMarker::Type(ArdourMarker::LoopEnd))
 		.addConst ("PunchIn", ArdourMarker::Type(ArdourMarker::PunchIn))
 		.addConst ("PunchOut", ArdourMarker::Type(ArdourMarker::PunchOut))
+		.endNamespace ()
+
+		.beginNamespace ("SelectionOp")
+		.addConst ("Toggle", Selection::Operation(Selection::Toggle))
+		.addConst ("Set", Selection::Operation(Selection::Set))
+		.addConst ("Extend", Selection::Operation(Selection::Extend))
+		.addConst ("Add", Selection::Operation(Selection::Add))
 		.endNamespace ()
 
 		.endNamespace (); // end ArdourUI
@@ -833,6 +873,13 @@ LuaInstance::instance ()
 	return _instance;
 }
 
+void
+LuaInstance::destroy_instance ()
+{
+	delete _instance;
+	_instance = 0;
+}
+
 LuaInstance::LuaInstance ()
 {
 	lua.Print.connect (&_lua_print);
@@ -844,6 +891,7 @@ LuaInstance::LuaInstance ()
 LuaInstance::~LuaInstance ()
 {
 	delete _lua_call_action;
+	delete _lua_render_icon;
 	delete _lua_add_action;
 	delete _lua_del_action;
 	delete _lua_get_action;
@@ -859,22 +907,28 @@ LuaInstance::init ()
 {
 	lua.do_command (
 			"function ScriptManager ()"
-			"  local self = { scripts = {}, instances = {} }"
+			"  local self = { scripts = {}, instances = {}, icons = {} }"
 			""
 			"  local remove = function (id)"
 			"   self.scripts[id] = nil"
 			"   self.instances[id] = nil"
+			"   self.icons[id] = nil"
 			"  end"
 			""
-			"  local addinternal = function (i, n, s, f, a)"
+			"  local addinternal = function (i, n, s, f, c, a)"
 			"   assert(type(i) == 'number', 'id must be numeric')"
 			"   assert(type(n) == 'string', 'Name must be string')"
 			"   assert(type(s) == 'string', 'Script must be string')"
 			"   assert(type(f) == 'function', 'Factory is a not a function')"
 			"   assert(type(a) == 'table' or type(a) == 'nil', 'Given argument is invalid')"
-			"   self.scripts[i] = { ['n'] = n, ['s'] = s, ['f'] = f, ['a'] = a }"
+			"   self.scripts[i] = { ['n'] = n, ['s'] = s, ['f'] = f, ['a'] = a, ['c'] = c }"
 			"   local env = _ENV;  env.f = nil env.debug = nil os.exit = nil require = nil dofile = nil loadfile = nil package = nil"
 			"   self.instances[i] = load (string.dump(f, true), nil, nil, env)(a)"
+			"   if type(c) == 'function' then"
+			"     self.icons[i] = load (string.dump(c, true), nil, nil, env)(a)"
+			"   else"
+			"     self.icons[i] = nil"
+			"   end"
 			"  end"
 			""
 			"  local call = function (id)"
@@ -888,17 +942,26 @@ LuaInstance::init ()
 			"   collectgarbage()"
 			"  end"
 			""
-			"  local add = function (i, n, s, b, a)"
+			"  local icon = function (id, ...)"
+			"   if type(self.icons[id]) == 'function' then"
+			"     pcall (self.icons[id], ...)"
+			"   end"
+			"   collectgarbage()"
+			"  end"
+			""
+			"  local add = function (i, n, s, b, c, a)"
 			"   assert(type(b) == 'string', 'ByteCode must be string')"
-			"   load (b)()" // assigns f
+			"   f = nil load (b)()" // assigns f
+			"   icn = nil load (c)()" // may assign "icn"
 			"   assert(type(f) == 'string', 'Assigned ByteCode must be string')"
-			"   addinternal (i, n, s, load(f), a)"
+			"   addinternal (i, n, s, load(f), type(icn) ~= \"string\" or icn == '' or load(icn), a)"
 			"  end"
 			""
 			"  local get = function (id)"
 			"   if type(self.scripts[id]) == 'table' then"
 			"    return { ['name'] = self.scripts[id]['n'],"
 			"             ['script'] = self.scripts[id]['s'],"
+			"             ['icon'] = type(self.scripts[id]['c']) == 'function',"
 			"             ['args'] = self.scripts[id]['a'] }"
 			"   end"
 			"   return nil"
@@ -914,7 +977,6 @@ LuaInstance::init ()
 			""
 			"  local function serialize (name, value)"
 			"   local rv = name .. ' = '"
-			"   collectgarbage()"
 			"   if type(value) == \"number\" or type(value) == \"string\" or type(value) == \"nil\" then"
 			"    return rv .. basic_serialize(value) .. ' '"
 			"   elseif type(value) == \"table\" then"
@@ -922,11 +984,12 @@ LuaInstance::init ()
 			"    for k,v in pairs(value) do"
 			"     local fieldname = string.format(\"%s[%s]\", name, basic_serialize(k))"
 			"     rv = rv .. serialize(fieldname, v) .. ' '"
-			"     collectgarbage()" // string concatenation allocates a new string
 			"    end"
 			"    return rv;"
 			"   elseif type(value) == \"function\" then"
 			"     return rv .. string.format(\"%q\", string.dump(value, true))"
+			"   elseif type(value) == \"boolean\" then"
+			"     return rv .. tostring (value)"
 			"   else"
 			"    error('cannot save a ' .. type(value))"
 			"   end"
@@ -940,6 +1003,7 @@ LuaInstance::init ()
 			"  local clear = function ()"
 			"   self.scripts = {}"
 			"   self.instances = {}"
+			"   self.icons = {}"
 			"   collectgarbage()"
 			"  end"
 			""
@@ -947,13 +1011,13 @@ LuaInstance::init ()
 			"   clear()"
 			"   load (state)()"
 			"   for i, s in pairs (scripts) do"
-			"    addinternal (i, s['n'], s['s'], load(s['f']), s['a'])"
+			"    addinternal (i, s['n'], s['s'], load(s['f']), type (s['c']) ~= \"string\" or s['c'] == '' or load (s['c']), s['a'])"
 			"   end"
 			"   collectgarbage()"
 			"  end"
 			""
 			" return { call = call, add = add, remove = remove, get = get,"
-			"          restore = restore, save = save, clear = clear}"
+			"          restore = restore, save = save, clear = clear, icon = icon}"
 			" end"
 			" "
 			" manager = ScriptManager ()"
@@ -971,6 +1035,7 @@ LuaInstance::init ()
 		_lua_del_action = new luabridge::LuaRef(lua_mgr["remove"]);
 		_lua_get_action = new luabridge::LuaRef(lua_mgr["get"]);
 		_lua_call_action = new luabridge::LuaRef(lua_mgr["call"]);
+		_lua_render_icon = new luabridge::LuaRef(lua_mgr["icon"]);
 		_lua_save = new luabridge::LuaRef(lua_mgr["save"]);
 		_lua_load = new luabridge::LuaRef(lua_mgr["restore"]);
 		_lua_clear = new luabridge::LuaRef(lua_mgr["clear"]);
@@ -1074,16 +1139,25 @@ bool
 LuaInstance::interactive_add (LuaScriptInfo::ScriptType type, int id)
 {
 	std::string title;
+	std::string param_function = "action_params";
 	std::vector<std::string> reg;
 
 	switch (type) {
 		case LuaScriptInfo::EditorAction:
 			reg = lua_action_names ();
-			title = "Add Lua Action";
+			title = _("Add Lua Action");
 			break;
 		case LuaScriptInfo::EditorHook:
 			reg = lua_slot_names ();
-			title = "Add Lua Callback Hook";
+			title = _("Add Lua Callback Hook");
+			break;
+		case LuaScriptInfo::Session:
+			if (!_session) {
+				return false;
+			}
+			reg = _session->registered_lua_functions ();
+			title = _("Add Lua Session Script");
+			param_function = "sess_params";
 			break;
 		default:
 			return false;
@@ -1111,7 +1185,7 @@ LuaInstance::interactive_add (LuaScriptInfo::ScriptType type, int id)
 		return false;
 	}
 
-	LuaScriptParamList lsp = LuaScriptParams::script_params (spi, "action_params");
+	LuaScriptParamList lsp = LuaScriptParams::script_params (spi, param_function);
 
 	ScriptParameterDialog spd (_("Set Script Parameters"), spi, reg, lsp);
 	switch (spd.run ()) {
@@ -1121,6 +1195,9 @@ LuaInstance::interactive_add (LuaScriptInfo::ScriptType type, int id)
 			return false;
 	}
 
+	LuaScriptParamPtr lspp (new LuaScriptParam("x-script-origin", "", spi->path, false));
+	lsp.push_back (lspp);
+
 	switch (type) {
 		case LuaScriptInfo::EditorAction:
 			return set_lua_action (id, spd.name(), script, lsp);
@@ -1128,6 +1205,18 @@ LuaInstance::interactive_add (LuaScriptInfo::ScriptType type, int id)
 		case LuaScriptInfo::EditorHook:
 			return register_lua_slot (spd.name(), script, lsp);
 			break;
+		case LuaScriptInfo::Session:
+			try {
+				_session->register_lua_function (spd.name(), script, lsp);
+			} catch (luabridge::LuaException const& e) {
+				string msg = string_compose (_("Session script '%1' instantiation failed: %2"), spd.name(), e.what ());
+				Gtk::MessageDialog am (msg);
+				am.run ();
+			} catch (SessionException e) {
+				string msg = string_compose (_("Loading Session script '%1' failed: %2"), spd.name(), e.what ());
+				Gtk::MessageDialog am (msg);
+				am.run ();
+			}
 		default:
 			break;
 	}
@@ -1177,6 +1266,23 @@ LuaInstance::call_action (const int id)
 	}
 }
 
+void
+LuaInstance::render_action_icon (cairo_t* cr, int w, int h, uint32_t c, void* i) {
+	int ii = reinterpret_cast<uintptr_t> (i);
+	instance()->render_icon (ii, cr, w, h, c);
+}
+
+void
+LuaInstance::render_icon (int i, cairo_t* cr, int w, int h, uint32_t clr)
+{
+	 Cairo::Context ctx (cr);
+	 try {
+		 (*_lua_render_icon)(i + 1, (Cairo::Context *)&ctx, w, h, clr);
+	 } catch (luabridge::LuaException const& e) {
+		 cerr << "LuaException:" << e.what () << endl;
+	 }
+}
+
 bool
 LuaInstance::set_lua_action (
 		const int id,
@@ -1189,17 +1295,19 @@ LuaInstance::set_lua_action (
 		// get bytcode of factory-function in a sandbox
 		// (don't allow scripts to interfere)
 		const std::string& bytecode = LuaScripting::get_factory_bytecode (script);
+		const std::string& iconfunc = LuaScripting::get_factory_bytecode (script, "icon", "icn");
 		luabridge::LuaRef tbl_arg (luabridge::newTable(L));
 		for (LuaScriptParamList::const_iterator i = args.begin(); i != args.end(); ++i) {
 			if ((*i)->optional && !(*i)->is_set) { continue; }
 			tbl_arg[(*i)->name] = (*i)->value;
 		}
-		(*_lua_add_action)(id + 1, name, script, bytecode, tbl_arg);
+		(*_lua_add_action)(id + 1, name, script, bytecode, iconfunc, tbl_arg);
 		ActionChanged (id, name); /* EMIT SIGNAL */
 	} catch (luabridge::LuaException const& e) {
 		cerr << "LuaException:" << e.what () << endl;
 		return false;
 	}
+	_session->set_dirty ();
 	return true;
 }
 
@@ -1213,6 +1321,7 @@ LuaInstance::remove_lua_action (const int id)
 		return false;
 	}
 	ActionChanged (id, ""); /* EMIT SIGNAL */
+	_session->set_dirty ();
 	return true;
 }
 
@@ -1247,6 +1356,23 @@ LuaInstance::lua_action_names ()
 		}
 	}
 	return rv;
+}
+
+bool
+LuaInstance::lua_action_has_icon (const int id)
+{
+	try {
+		luabridge::LuaRef ref ((*_lua_get_action)(id + 1));
+		if (ref.isNil()) {
+			return false;
+		}
+		if (ref["icon"].isBoolean()) {
+			return ref["icon"].cast<bool>();
+		}
+	} catch (luabridge::LuaException const& e) {
+		cerr << "LuaException:" << e.what () << endl;
+	}
+	return false;
 }
 
 bool
@@ -1321,6 +1447,7 @@ LuaInstance::register_lua_slot (const std::string& name, const std::string& scri
 	} catch (luabridge::LuaException const& e) {
 		cerr << "LuaException:" << e.what () << endl;
 	}
+	_session->set_dirty ();
 	return false;
 }
 
@@ -1333,6 +1460,7 @@ LuaInstance::unregister_lua_slot (const PBD::ID& id)
 		_callbacks.erase (i);
 		return true;
 	}
+	_session->set_dirty ();
 	return false;
 }
 
@@ -1470,7 +1598,15 @@ LuaCallback::get_state (void)
 		luabridge::LuaRef savedstate ((*_lua_save)());
 		saved = savedstate.cast<std::string>();
 	}
-	lua.collect_garbage ();
+
+	lua.collect_garbage (); // this may be expensive:
+	/* Editor::instant_save() calls Editor::get_state() which
+	 * calls LuaInstance::get_hook_state() which in turn calls
+	 * this LuaCallback::get_state() for every registered hook.
+	 *
+	 * serialize in _lua_save() allocates many small strings
+	 * on the lua-stack, collecting them all may take a ms.
+	 */
 
 	gchar* b64 = g_base64_encode ((const guchar*)saved.c_str (), saved.size ());
 	std::string b64s (b64);
@@ -1546,7 +1682,6 @@ LuaCallback::init (void)
 			""
 			"  local function serialize (name, value)"
 			"   local rv = name .. ' = '"
-			"   collectgarbage()"
 			"   if type(value) == \"number\" or type(value) == \"string\" or type(value) == \"nil\" then"
 			"    return rv .. basic_serialize(value) .. ' '"
 			"   elseif type(value) == \"table\" then"
@@ -1554,11 +1689,12 @@ LuaCallback::init (void)
 			"    for k,v in pairs(value) do"
 			"     local fieldname = string.format(\"%s[%s]\", name, basic_serialize(k))"
 			"     rv = rv .. serialize(fieldname, v) .. ' '"
-			"     collectgarbage()" // string concatenation allocates a new string
 			"    end"
 			"    return rv;"
 			"   elseif type(value) == \"function\" then"
 			"     return rv .. string.format(\"%q\", string.dump(value, true))"
+			"   elseif type(value) == \"boolean\" then"
+			"     return rv .. tostring (value)"
 			"   else"
 			"    error('cannot save a ' .. type(value))"
 			"   end"
@@ -1674,10 +1810,6 @@ LuaCallback::session_going_away ()
 	_session = 0;
 
 	drop_callback (); /* EMIT SIGNAL */
-
-	lua_State* L = lua.getState();
-	LuaBindings::set_session (L, 0);
-	lua.do_command ("collectgarbage();");
 }
 
 void

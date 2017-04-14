@@ -2324,6 +2324,18 @@ ProcessorBox::processor_operation (ProcessorOperation op)
 
 	case ProcessorsToggleActive:
 		for (ProcSelection::iterator i = targets.begin(); i != targets.end(); ++i) {
+			if (!(*i)->display_to_user ()) {
+				assert (0); // these should not be selectable to begin with.
+				continue;
+			}
+			if (!boost::dynamic_pointer_cast<PluginInsert> (*i)) {
+				continue;
+			}
+#ifdef MIXBUS
+			if (boost::dynamic_pointer_cast<PluginInsert> (*i)->is_channelstrip()) {
+				continue;
+			}
+#endif
 			(*i)->enable (!(*i)->enabled ());
 		}
 		break;
@@ -2477,7 +2489,7 @@ ProcessorBox::use_plugins (const SelectedPlugins& plugins)
 			} else if (_session->engine().connected () && processor_can_be_edited (processor)) {
 				if ((*p)->has_editor ()) {
 					edit_processor (processor);
-				} else {
+				} else if (boost::dynamic_pointer_cast<PluginInsert>(processor)->plugin()->parameter_count() > 0) {
 					generic_edit_processor (processor);
 				}
 			}
@@ -4234,6 +4246,7 @@ ProcessorWindowProxy::processor_going_away ()
 	   send DropReferences is about to be deleted, but lets do it anyway.
 	*/
 	going_away_connection.disconnect();
+	delete this;
 }
 
 ARDOUR::SessionHandlePtr*
@@ -4285,6 +4298,7 @@ ProcessorWindowProxy::get (bool create)
 	}
 	if (_window && (is_custom != want_custom)) {
 		/* drop existing window - wrong type */
+		set_state_mask (Gtkmm2ext::WindowProxy::StateMask (state_mask () & ~WindowProxy::Size));
 		drop_window ();
 	}
 
@@ -4309,6 +4323,7 @@ ProcessorWindowProxy::show_the_right_window ()
 {
 	if (_window && (is_custom != want_custom)) {
 		/* drop existing window - wrong type */
+		set_state_mask (Gtkmm2ext::WindowProxy::StateMask (state_mask () & ~WindowProxy::Size));
 		drop_window ();
 	}
 	toggle ();
@@ -4369,6 +4384,7 @@ PluginPinWindowProxy::processor_going_away ()
 	_window = 0;
 	WM::Manager::instance().remove (this);
 	going_away_connection.disconnect();
+	delete this;
 }
 
 void

@@ -86,14 +86,13 @@ private:
 
 	void start_touch();
 	void end_touch();
-	void toggled();
+	bool button_press(GdkEventButton*);
+	bool button_release(GdkEventButton*);
 
 	void run_note_select_dialog();
 	void set_ratio(double ratio);
 	void set_freq_beats(double beats);
 	bool on_button_release(GdkEventButton* ev);
-
-	void value_changed();
 
 	Gtk::Widget*                                 _widget;
 	boost::shared_ptr<ARDOUR::Automatable>       _printer;

@@ -74,6 +74,7 @@ ArdourMarker::ArdourMarker (PublicEditor& ed, ArdourCanvas::Container& parent, g
 	, _shown (false)
 	, _line_shown (false)
 	, _color (rgba)
+	, _points_color (rgba)
 	, _left_label_limit (DBL_MAX)
 	, _right_label_limit (DBL_MAX)
 	, _label_offset (0)
@@ -435,16 +436,22 @@ ArdourMarker::setup_name_display ()
 			 * arbitrary 2 pixels of extra padding at the end
 			 */
 			switch (_type) {
-				case Mark:
 				case Tempo:
+					_name_item->hide ();
+					// tip's x-pos is at "M3", box is 2x marker's
+					_name_background->set_x0 (-M3);
+					_name_background->set_x1 (3 * M3);
+					break;
+				case Mark:
 				case Meter:
 					_name_background->set_x0 (M3);
+					_name_background->set_x1 (_name_item->position().x + name_width + padding);
 					break;
 				default:
 					_name_background->set_x0 (0);
+					_name_background->set_x1 (_name_item->position().x + name_width + padding);
 					break;
 			}
-			_name_background->set_x1 (_name_item->position().x + name_width + padding);
 		}
 	}
 
@@ -483,6 +490,14 @@ ArdourMarker::hide ()
 
 	group->hide ();
 	setup_line ();
+}
+
+void
+ArdourMarker::set_points_color (uint32_t c)
+{
+	_points_color = c;
+	mark->set_fill_color (_points_color);
+	mark->set_outline_color (_points_color);
 }
 
 void

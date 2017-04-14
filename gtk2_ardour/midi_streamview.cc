@@ -243,6 +243,18 @@ MidiStreamView::update_data_note_range(uint8_t min, uint8_t max)
 }
 
 void
+MidiStreamView::set_layer_display (LayerDisplay d)
+{
+
+//revert this change for now.  Although stacked view is weirdly implemented wrt the "scroomer", it is still necessary to manage layered midi regions.
+//	if (d != Overlaid) {
+//		return;
+//	}
+
+	StreamView::set_layer_display (d);
+}
+
+void
 MidiStreamView::redisplay_track ()
 {
 	if (!_trackview.is_midi_track()) {
@@ -346,7 +358,7 @@ MidiStreamView::draw_note_lines()
 		double h = y - prev_y;
 		double mid = y + (h/2.0);
 
-		if (height > 1.0) { // XXX ? should that not be h >= 1 ?
+		if (mid >= 0 && h > 1.0) {
 			_note_lines->add (mid, h, color);
 		}
 

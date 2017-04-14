@@ -102,7 +102,7 @@ class AudioClock : public CairoWidget, public ARDOUR::SessionHandlePtr
 	static std::vector<AudioClock*> clocks;
 
 	protected:
-	void render (cairo_t*, cairo_rectangle_t*);
+	void render (Cairo::RefPtr<Cairo::Context> const&, cairo_rectangle_t*);
 	bool get_is_duration () const { return is_duration; } ;
 
 	virtual void build_ops_menu ();
@@ -223,7 +223,6 @@ class AudioClock : public CairoWidget, public ARDOUR::SessionHandlePtr
 
 	void session_configuration_changed (std::string);
 	void session_property_changed (const PBD::PropertyChange&);
-	void metric_position_changed ();
 
 	Field index_to_field () const;
 

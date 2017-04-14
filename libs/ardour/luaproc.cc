@@ -87,6 +87,7 @@ LuaProc::LuaProc (const LuaProc &other)
 #endif
 	, _lua_dsp (0)
 	, _script (other.script ())
+	, _origin (other._origin)
 	, _lua_does_channelmapping (false)
 	, _lua_has_inline_display (false)
 	, _designated_bypass_port (UINT32_MAX)
@@ -173,6 +174,9 @@ LuaProc::init ()
 boost::weak_ptr<Route>
 LuaProc::route () const
 {
+	if (!_owner) {
+		return boost::weak_ptr<Route>();
+	}
 	return static_cast<Route*>(_owner)->weakroute ();
 }
 
@@ -763,6 +767,7 @@ LuaProc::add_state (XMLNode* root) const
 	g_free (b64);
 	XMLNode* script_node = new XMLNode (X_("script"));
 	script_node->add_property (X_("lua"), LUA_VERSION);
+	script_node->add_property (X_("origin"), _origin);
 	script_node->add_content (b64s);
 	root->add_child_nocopy (*script_node);
 
@@ -787,6 +792,10 @@ LuaProc::set_script_from_state (const XMLNode& node)
 	}
 
 	if ((child = node.child (X_("script"))) != 0) {
+		XMLProperty const* prop;
+		if ((prop = node.property ("origin")) != 0) {
+			_origin = prop->value();
+		}
 		for (XMLNodeList::const_iterator n = child->children ().begin (); n != child->children ().end (); ++n) {
 			if (!(*n)->is_content ()) { continue; }
 			gsize size;
@@ -1125,7 +1134,10 @@ LuaProc::load_preset (PresetRecord r)
 				assert (index);
 				assert (value);
 				LocaleGuard lg;
-				set_parameter (atoi (index->value().c_str()), atof (value->value().c_str ()));
+				const uint32_t p = atoi (index->value().c_str());
+				const float v = atof (value->value().c_str ());
+				set_parameter (p, v);
+				PresetPortSetValue (p, v); /* EMIT SIGNAL */
 			}
 		}
 		return Plugin::load_preset(r);
@@ -1140,6 +1152,9 @@ LuaProc::do_save_preset (std::string name) {
 	if (t == 0) {
 		return "";
 	}
+
+	// prevent dups -- just in case
+	t->root()->remove_nodes_and_delete (X_("label"), name);
 
 	std::string uri (preset_name_to_uri (name));
 
@@ -1236,7 +1251,9 @@ LuaPluginInfo::load (Session& session)
 	}
 
 	try {
-		PluginPtr plugin (new LuaProc (session.engine (), session, script));
+		LuaProc* lp = new LuaProc (session.engine (), session, script);
+		lp->set_origin (path);
+		PluginPtr plugin (lp);
 		return plugin;
 	} catch (failed_constructor& err) {
 		;

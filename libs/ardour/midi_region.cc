@@ -80,6 +80,7 @@ MidiRegion::MidiRegion (const SourceList& srcs)
 	: Region (srcs)
 	, _start_beats (Properties::start_beats, 0.0)
 	, _length_beats (Properties::length_beats, midi_source(0)->length_beats().to_double())
+	, _ignore_shift (false)
 {
 	register_properties ();
 	midi_source(0)->ModelChanged.connect_same_thread (_source_connection, boost::bind (&MidiRegion::model_changed, this));
@@ -92,6 +93,7 @@ MidiRegion::MidiRegion (boost::shared_ptr<const MidiRegion> other)
 	: Region (other)
 	, _start_beats (Properties::start_beats, other->_start_beats)
 	, _length_beats (Properties::length_beats, other->_length_beats)
+	, _ignore_shift (false)
 {
 	//update_length_beats ();
 	register_properties ();
@@ -102,17 +104,20 @@ MidiRegion::MidiRegion (boost::shared_ptr<const MidiRegion> other)
 }
 
 /** Create a new MidiRegion that is part of an existing one */
-MidiRegion::MidiRegion (boost::shared_ptr<const MidiRegion> other, frameoffset_t offset, const int32_t sub_num)
-	: Region (other, offset, sub_num)
+MidiRegion::MidiRegion (boost::shared_ptr<const MidiRegion> other, MusicFrame offset)
+	: Region (other, offset)
 	, _start_beats (Properties::start_beats, other->_start_beats)
 	, _length_beats (Properties::length_beats, other->_length_beats)
+	, _ignore_shift (false)
 {
-	if (offset != 0) {
-		_start_beats = (_session.tempo_map().exact_qn_at_frame (other->_position + offset, sub_num) - other->_quarter_note) + other->_start_beats;
-		update_length_beats (sub_num);
-	}
 
 	register_properties ();
+
+	const double offset_quarter_note = _session.tempo_map().exact_qn_at_frame (other->_position + offset.frame, offset.division) - other->_quarter_note;
+	if (offset.frame != 0) {
+		_start_beats = other->_start_beats + offset_quarter_note;
+		_length_beats = other->_length_beats - offset_quarter_note;
+	}
 
 	assert(_name.val().find("/") == string::npos);
 	midi_source(0)->ModelChanged.connect_same_thread (_source_connection, boost::bind (&MidiRegion::model_changed, this));
@@ -178,10 +183,18 @@ MidiRegion::clone (boost::shared_ptr<MidiSource> newsrc) const
 	Evoral::Beats const bend = bfc.from (_start + _length);
 
 	{
+		boost::shared_ptr<MidiSource> ms = midi_source(0);
+		Source::Lock lm (ms->mutex());
+
+		if (!ms->model()) {
+			ms->load_model (lm);
+		}
+
 		/* Lock our source since we'll be reading from it.  write_to() will
-		   take a lock on newsrc. */
-		Source::Lock lm (midi_source(0)->mutex());
-		if (midi_source(0)->write_to (lm, newsrc, bbegin, bend)) {
+		   take a lock on newsrc.
+		*/
+
+		if (ms->write_to (lm, newsrc, bbegin, bend)) {
 			return boost::shared_ptr<MidiRegion> ();
 		}
 	}
@@ -193,6 +206,7 @@ MidiRegion::clone (boost::shared_ptr<MidiSource> newsrc) const
 	plist.add (Properties::start, _start);
 	plist.add (Properties::start_beats, _start_beats);
 	plist.add (Properties::length, _length);
+	plist.add (Properties::position, _position);
 	plist.add (Properties::beat, _beat);
 	plist.add (Properties::length_beats, _length_beats);
 	plist.add (Properties::layer, 0);
@@ -332,6 +346,24 @@ MidiRegion::set_position_internal (framepos_t pos, bool allow_bbt_recompute, con
 		   at the new position (tempo map may dictate a different number of frames).
 		*/
 		Region::set_length_internal (_session.tempo_map().frames_between_quarter_notes (quarter_note(), quarter_note() + length_beats()), sub_num);
+	}
+}
+
+void
+MidiRegion::set_position_music_internal (double qn)
+{
+	Region::set_position_music_internal (qn);
+	/* set _start to new position in tempo map */
+	_start = _session.tempo_map().frames_between_quarter_notes (quarter_note() - start_beats(), quarter_note());
+
+	if (position_lock_style() == AudioTime) {
+		_length_beats = _session.tempo_map().quarter_note_at_frame (_position + _length) - quarter_note();
+
+	} else {
+		/* leave _length_beats alone, and change _length to reflect the state of things
+		   at the new position (tempo map may dictate a different number of frames).
+		*/
+		_length = _session.tempo_map().frames_between_quarter_notes (quarter_note(), quarter_note() + length_beats());
 	}
 }
 
@@ -556,6 +588,27 @@ MidiRegion::model_changed ()
 	midi_source()->AutomationStateChanged.connect_same_thread (
 		_model_connection, boost::bind (&MidiRegion::model_automation_state_changed, this, _1)
 		);
+
+	model()->ContentsShifted.connect_same_thread (_model_shift_connection, boost::bind (&MidiRegion::model_shifted, this, _1));
+}
+void
+MidiRegion::model_shifted (double qn_distance)
+{
+	if (!model()) {
+		return;
+	}
+
+	if (!_ignore_shift) {
+		PropertyChange what_changed;
+		_start_beats += qn_distance;
+		framepos_t const new_start = _session.tempo_map().frames_between_quarter_notes (_quarter_note - _start_beats, _quarter_note);
+		_start = new_start;
+		what_changed.add (Properties::start);
+		what_changed.add (Properties::start_beats);
+		send_change (what_changed);
+	} else {
+		_ignore_shift = false;
+	}
 }
 
 void
@@ -591,7 +644,10 @@ MidiRegion::fix_negative_start ()
 {
 	BeatsFramesConverter c (_session.tempo_map(), _position);
 
-	model()->insert_silence_at_start (c.from (-_start));
+	_ignore_shift = true;
+
+	model()->insert_silence_at_start (Evoral::Beats (- _start_beats));
+
 	_start = 0;
 	_start_beats = 0.0;
 }
@@ -600,6 +656,7 @@ void
 MidiRegion::set_start_internal (framecnt_t s, const int32_t sub_num)
 {
 	Region::set_start_internal (s, sub_num);
+
 	set_start_beats_from_start_frames ();
 }
 

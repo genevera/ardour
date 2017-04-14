@@ -33,6 +33,9 @@
 #include "gtkmm2ext/utils.h"
 #include "gtkmm2ext/rgb_macros.h"
 
+#include "canvas/utils.h"
+#include "canvas/colors.h"
+
 #include "actions.h"
 #include "rgb_macros.h"
 #include "shuttle_control.h"
@@ -253,16 +256,6 @@ ShuttleControl::build_shuttle_context_menu ()
 }
 
 void
-ShuttleControl::show_shuttle_context_menu ()
-{
-	if (shuttle_context_menu == 0) {
-		build_shuttle_context_menu ();
-	}
-
-	shuttle_context_menu->popup (1, gtk_get_current_event_time());
-}
-
-void
 ShuttleControl::reset_speed ()
 {
 	if (_session->transport_rolling()) {
@@ -292,7 +285,10 @@ ShuttleControl::on_button_press_event (GdkEventButton* ev)
 	}
 
 	if (Keyboard::is_context_menu_event (ev)) {
-		show_shuttle_context_menu ();
+		if (shuttle_context_menu == 0) {
+			build_shuttle_context_menu ();
+		}
+		shuttle_context_menu->popup (ev->button, ev->time);
 		return true;
 	}
 
@@ -574,8 +570,9 @@ ShuttleControl::set_colors ()
 }
 
 void
-ShuttleControl::render (cairo_t* cr, cairo_rectangle_t*)
+ShuttleControl::render (Cairo::RefPtr<Cairo::Context> const& ctx, cairo_rectangle_t*)
 {
+	cairo_t* cr = ctx->cobj();
 	// center slider line
 	float yc = get_height() / 2;
 	float lw = 3;
@@ -612,7 +609,12 @@ ShuttleControl::render (cairo_t* cr, cairo_rectangle_t*)
 	cairo_set_source_rgba (cr, 0, 0, 0, 1);
 	cairo_fill(cr);
 	rounded_rectangle (cr, x + 1, 1, marker_size - 2, get_height() - 2, 3.5);
-	cairo_set_source (cr, pattern);
+	if (_flat_buttons) {
+		uint32_t col = UIConfiguration::instance().color ("shuttle");
+		ArdourCanvas::set_source_rgba (cr, col);
+	} else {
+		cairo_set_source (cr, pattern);
+	}
 	if (UIConfiguration::instance().get_widget_prelight() && _hovering) {
 		cairo_fill_preserve (cr);
 		cairo_set_source_rgba (cr, 1, 1, 1, 0.15);
@@ -657,15 +659,6 @@ ShuttleControl::render (cairo_t* cr, cairo_rectangle_t*)
 		}
 	}
 #endif
-}
-
-void
-ShuttleControl::shuttle_unit_clicked ()
-{
-	if (shuttle_unit_menu == 0) {
-		shuttle_unit_menu = dynamic_cast<Menu*> (ActionManager::get_widget ("/ShuttleUnitPopup"));
-	}
-	shuttle_unit_menu->popup (1, gtk_get_current_event_time());
 }
 
 void

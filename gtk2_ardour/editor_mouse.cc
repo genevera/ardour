@@ -686,14 +686,25 @@ Editor::button_press_handler_1 (ArdourCanvas::Item* item, GdkEvent* event, ItemT
 
 	case TempoMarkerItem:
 	{
-		_drags->set (
-			new TempoMarkerDrag (
-				this,
-				item,
-				ArdourKeyboard::indicates_copy (event->button.state)
-				),
-			event
-			);
+		if (ArdourKeyboard::indicates_constraint (event->button.state)) {
+			_drags->set (
+				new TempoEndDrag (
+					this,
+					item
+					),
+				event
+				);
+		} else {
+			_drags->set (
+				new TempoMarkerDrag (
+					this,
+					item,
+					ArdourKeyboard::indicates_copy (event->button.state)
+					),
+				event
+				);
+		}
+
 		return true;
 	}
 
@@ -726,6 +737,9 @@ Editor::button_press_handler_1 (ArdourCanvas::Item* item, GdkEvent* event, ItemT
 		if (!Keyboard::modifier_state_equals (event->button.state, Keyboard::PrimaryModifier)
 			&& !ArdourKeyboard::indicates_constraint (event->button.state)) {
 			_drags->set (new CursorDrag (this, *playhead_cursor, false), event);
+		} else if (ArdourKeyboard::indicates_constraint (event->button.state)
+			   && Keyboard::modifier_state_contains (event->button.state, Keyboard::PrimaryModifier)) {
+			_drags->set (new TempoTwistDrag (this, item), event);
 		} else if (ArdourKeyboard::indicates_constraint (event->button.state)) {
 			_drags->set (new BBTRulerDrag (this, item), event);
 		}
@@ -1255,11 +1269,23 @@ Editor::button_press_handler (ArdourCanvas::Item* item, GdkEvent* event, ItemTyp
 		return true;
 	}
 
-	//not rolling, range mode click + join_play_range :  locate the PH here
-	if ( !_drags->active () && _session && !_session->transport_rolling() && ( effective_mouse_mode() == MouseRange ) && UIConfiguration::instance().get_follow_edits() && !_session->config.get_external_sync() ) {
-		framepos_t where = canvas_event_sample (event);
-		snap_to(where);
-		_session->request_locate (where, false);
+	/* not rolling, effectively in range mode, follow edits enabled (likely
+	 * to start range drag), not in a fade handle (since that means we are
+	 * not starting a range drag): locate the PH here
+	 */
+
+	if ((item_type != FadeInHandleItem) &&
+	    (item_type != FadeOutHandleItem) &&
+	    !_drags->active () && 
+	    _session && 
+	    !_session->transport_rolling() && 
+	    (effective_mouse_mode() == MouseRange) && 
+	    UIConfiguration::instance().get_follow_edits() && 
+	    !_session->config.get_external_sync()) {
+
+		MusicFrame where (canvas_event_sample (event), 0);
+		snap_to (where);
+		_session->request_locate (where.frame, false);
 	}
 
 	switch (event->button.button) {
@@ -1306,7 +1332,7 @@ Editor::button_release_dispatch (GdkEventButton* ev)
 bool
 Editor::button_release_handler (ArdourCanvas::Item* item, GdkEvent* event, ItemType item_type)
 {
-	framepos_t where = canvas_event_sample (event);
+	MusicFrame where (canvas_event_sample (event), 0);
 	AutomationTimeAxisView* atv = 0;
 
 	_press_cursor_ctx.reset();
@@ -1454,7 +1480,7 @@ Editor::button_release_handler (ArdourCanvas::Item* item, GdkEvent* event, ItemT
 			case SamplesRulerItem:
 			case MinsecRulerItem:
 			case BBTRulerItem:
-				popup_ruler_menu (where, item_type);
+				popup_ruler_menu (where.frame, item_type);
 				break;
 
 			case MarkerItem:
@@ -1546,7 +1572,7 @@ Editor::button_release_handler (ArdourCanvas::Item* item, GdkEvent* event, ItemT
 		case MarkerBarItem:
 			if (!_dragging_playhead) {
 				snap_to_with_modifier (where, event, RoundNearest, true);
-				mouse_add_new_marker (where);
+				mouse_add_new_marker (where.frame);
 			}
 			return true;
 
@@ -1554,14 +1580,14 @@ Editor::button_release_handler (ArdourCanvas::Item* item, GdkEvent* event, ItemT
 			if (!_dragging_playhead) {
 				// if we get here then a dragged range wasn't done
 				snap_to_with_modifier (where, event, RoundNearest, true);
-				mouse_add_new_marker (where, true);
+				mouse_add_new_marker (where.frame, true);
 			}
 			return true;
 		case TempoBarItem:
 		case TempoCurveItem:
 			if (!_dragging_playhead) {
 				snap_to_with_modifier (where, event);
-				mouse_add_new_tempo_event (where);
+				mouse_add_new_tempo_event (where.frame);
 			}
 			return true;
 
@@ -1605,7 +1631,7 @@ Editor::button_release_handler (ArdourCanvas::Item* item, GdkEvent* event, ItemT
 				bool with_guard_points = Keyboard::modifier_state_equals (event->button.state, Keyboard::PrimaryModifier);
 				atv = dynamic_cast<AutomationTimeAxisView*>(clicked_axisview);
 				if (atv) {
-					atv->add_automation_event (event, where, event->button.y, with_guard_points);
+					atv->add_automation_event (event, where.frame, event->button.y, with_guard_points);
 				}
 				return true;
 				break;

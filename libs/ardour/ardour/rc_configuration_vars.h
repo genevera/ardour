@@ -147,6 +147,7 @@ CONFIG_VARIABLE (std::string, midi_audition_synth_uri, "midi-audition-synth-uri"
 /* click */
 
 CONFIG_VARIABLE (bool, clicking, "clicking", false)
+CONFIG_VARIABLE (bool, click_record_only, "click-record-only", false)
 CONFIG_VARIABLE (std::string, click_sound, "click-sound", "")
 CONFIG_VARIABLE (std::string, click_emphasis_sound, "click-emphasis-sound", "")
 CONFIG_VARIABLE (gain_t, click_gain, "click-gain", 1.0)
@@ -240,8 +241,8 @@ CONFIG_VARIABLE (bool, use_windows_vst, "use-windows-vst", true)
 CONFIG_VARIABLE (bool, use_lxvst, "use-lxvst", true)
 CONFIG_VARIABLE (bool, use_macvst, "use-macvst", true)
 CONFIG_VARIABLE (bool, discover_vst_on_start, "discover-vst-on-start", false)
-CONFIG_VARIABLE (bool, verbose_plugin_scan, "verbose-plugin-scan", true)
-CONFIG_VARIABLE (int, vst_scan_timeout, "vst-scan-timeout", 600) /* deciseconds, per plugin, <= 0 no timeout */
+CONFIG_VARIABLE (bool, verbose_plugin_scan, "verbose-plugin-scan", false)
+CONFIG_VARIABLE (int, vst_scan_timeout, "vst-scan-timeout", 1200) /* deciseconds, per plugin, <= 0 no timeout */
 CONFIG_VARIABLE (bool, discover_audio_units, "discover-audio-units", false)
 CONFIG_VARIABLE (bool, ask_replace_instrument, "ask-replace-instrument", true)
 CONFIG_VARIABLE (bool, ask_setup_instrument, "ask-setup-instrument", true)

@@ -110,7 +110,7 @@ Text::_redraw () const
 	Glib::RefPtr<Pango::Context> context = _canvas->get_pango_context();
 	Glib::RefPtr<Pango::Layout> layout = Pango::Layout::create (context);
 
-#ifdef __APPLE__
+#if 0 // def __APPLE__ // Looks like this is no longer needed 2017-03-11, pango 1.36.8, pangomm 2.34.0
 	if (_width_correction < 0.0) {
 		// Pango returns incorrect text width on some OS X
 		// So we have to make a correction
@@ -195,7 +195,7 @@ Text::render (Rect const & area, Cairo::RefPtr<Cairo::Context> context) const
 	}
 
 	Rect self = item_to_window (Rect (0, 0, min (_clamped_width, (double)_image->get_width ()), _image->get_height ()));
-	boost::optional<Rect> i = self.intersection (area);
+	Rect i = self.intersection (area);
 
 	if (!i) {
 		return;
@@ -205,7 +205,7 @@ Text::render (Rect const & area, Cairo::RefPtr<Cairo::Context> context) const
 		_redraw ();
 	}
 
-	Rect intersection (i.get());
+	Rect intersection (i);
 
 	context->rectangle (intersection.x0, intersection.y0, intersection.width(), intersection.height());
 #ifdef __APPLE__
@@ -238,7 +238,7 @@ void
 Text::compute_bounding_box () const
 {
 	if (!_canvas || _text.empty()) {
-		_bounding_box = boost::optional<Rect> ();
+		_bounding_box = Rect ();
 		_bounding_box_dirty = false;
 		return;
 	}

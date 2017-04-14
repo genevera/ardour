@@ -158,6 +158,8 @@ class LIBARDOUR_API PresentationInfo : public PBD::Stateful
 
 	bool order_set() const { return _flags & OrderSet; }
 
+	int selection_cnt() const { return _selection_cnt; }
+
 	bool hidden() const { return _flags & Hidden; }
 	bool selected() const { return _flags & Selected; }
 	bool special() const { return _flags & (MasterOut|MonitorOut|Auditioner); }
@@ -232,14 +234,28 @@ class LIBARDOUR_API PresentationInfo : public PBD::Stateful
 	static Flag get_flags (XMLNode const& node);
 	static std::string state_node_name;
 
-	/* for things concerned about *any* PresentationInfo. This is emitted
-	 * only at the request of another object that has finished making some
-	 * changes (e.g. reordering things)
+	/* for things concerned about *any* PresentationInfo.
 	 */
 
-	static PBD::Signal0<void> Change;
+	static PBD::Signal1<void,PBD::PropertyChange const &> Change;
 
 	static void make_property_quarks ();
+
+  protected:
+	friend class ChangeSuspender;
+	static void suspend_change_signal ();
+	static void unsuspend_change_signal ();
+
+  public:
+	class ChangeSuspender {
+          public:
+		ChangeSuspender() {
+			PresentationInfo::suspend_change_signal ();
+		}
+		~ChangeSuspender() {
+			PresentationInfo::unsuspend_change_signal ();
+		}
+	};
 
   protected:
 	friend class Stripable;
@@ -249,6 +265,14 @@ class LIBARDOUR_API PresentationInfo : public PBD::Stateful
 	order_t _order;
 	Flag    _flags;
 	color_t _color;
+	int     _selection_cnt;
+
+	static PBD::PropertyChange _pending_static_changes;
+	static Glib::Threads::Mutex static_signal_lock;
+	static int _change_signal_suspended;
+	static void send_static_change (const PBD::PropertyChange&);
+
+	static int selection_counter;
 };
 
 }

@@ -21,6 +21,7 @@
 #include <cstdlib>
 
 #include "pbd/stacktrace.h"
+#include "pbd/unwind.h"
 
 #include "ardour/midi_region.h"
 #include "ardour/playlist.h"
@@ -88,10 +89,6 @@ Editor::extend_selection_to_track (TimeAxisView& view)
 
 	sorted.sort (cmp);
 
-	if (!selection->selected (&view)) {
-		to_be_added.push_back (&view);
-	}
-
 	/* figure out if we should go forward or backwards */
 
 	for (TrackViewList::iterator i = sorted.begin(); i != sorted.end(); ++i) {
@@ -157,6 +154,10 @@ Editor::extend_selection_to_track (TimeAxisView& view)
 		}
 	}
 
+	if (!selection->selected (&view)) {
+		to_be_added.push_back (&view);
+	}
+
 	if (!to_be_added.empty()) {
 		selection->add (to_be_added);
 		return true;
@@ -174,6 +175,7 @@ Editor::select_all_tracks ()
 			visible_views.push_back (*i);
 		}
 	}
+	PBD::Unwinder<bool> uw (_track_selection_change_without_scroll, true);
 	selection->set (visible_views);
 }
 
@@ -891,6 +893,30 @@ out:
 	return commit;
 }
 
+void
+Editor::set_selection (std::list<Selectable*> s, Selection::Operation op)
+{
+	if (s.empty()) {
+		return;
+	}
+	begin_reversible_selection_op (X_("set selection"));
+	switch (op) {
+		case Selection::Toggle:
+			selection->toggle (s);
+			break;
+		case Selection::Set:
+			selection->set (s);
+			break;
+		case Selection::Extend:
+			selection->add (s);
+			break;
+		case Selection::Add:
+			selection->add (s);
+			break;
+	}
+
+	commit_reversible_selection_op () ;
+}
 
 void
 Editor::set_selected_regionview_from_region_list (boost::shared_ptr<Region> region, Selection::Operation op)
@@ -955,14 +981,37 @@ Editor::set_selected_regionview_from_map_event (GdkEventAny* /*ev*/, StreamView*
 	return true;
 }
 
+struct SelectionOrderSorter {
+	bool operator() (TimeAxisView const * const a, TimeAxisView const * const b) const  {
+		boost::shared_ptr<Stripable> sa = a->stripable ();
+		boost::shared_ptr<Stripable> sb = b->stripable ();
+		if (!sa && !sb) {
+			return a < b;
+		}
+		if (!sa) {
+			return false;
+		}
+		if (!sb) {
+			return true;
+		}
+		return sa->presentation_info().selection_cnt() < sb->presentation_info().selection_cnt();
+	}
+};
+
 void
 Editor::track_selection_changed ()
 {
+	SelectionOrderSorter cmp;
+	selection->tracks.sort (cmp);
+
 	switch (selection->tracks.size()) {
 	case 0:
 		break;
 	default:
-		set_selected_mixer_strip (*(selection->tracks.front()));
+		set_selected_mixer_strip (*(selection->tracks.back()));
+		if (!_track_selection_change_without_scroll) {
+			ensure_time_axis_view_is_visible (*(selection->tracks.back()), false);
+		}
 		break;
 	}
 
@@ -997,6 +1046,8 @@ Editor::track_selection_changed ()
 	}
 
 	ActionManager::set_sensitive (ActionManager::track_selection_sensitive_actions, !selection->tracks.empty());
+
+	sensitize_the_right_region_actions (false);
 
 	/* notify control protocols */
 
@@ -1082,21 +1133,86 @@ Editor::sensitize_all_region_actions (bool s)
 	_all_region_actions_sensitized = s;
 }
 
-/** Sensitize region-based actions based on the selection ONLY, ignoring the entered_regionview.
- *  This method should be called just before displaying a Region menu.  When a Region menu is not
- *  currently being shown, all region actions are sensitized so that hotkey-triggered actions
- *  on entered_regionviews work without having to check sensitivity every time the selection or
- *  entered_regionview changes.
+/** Sensitize region-based actions.
  *
- *  This method also sets up toggle action state as appropriate.
+ *  This method is called from whenever we leave the canvas, either by moving
+ *  the pointer out of it, or by popping up a context menu. See
+ *  Editor::{entered,left}_track_canvas() for details there.
  */
 void
-Editor::sensitize_the_right_region_actions ()
+Editor::sensitize_the_right_region_actions (bool because_canvas_crossing)
 {
-	RegionSelection rs = get_regions_from_selection_and_entered ();
-	sensitize_all_region_actions (!rs.empty ());
+	bool have_selection = false;
+	bool have_entered = false;
+	bool have_edit_point = false;
+	RegionSelection rs;
+
+	// std::cerr << "STRRA: crossing ? " << because_canvas_crossing << " within ? " << within_track_canvas
+	// << std::endl;
+
+	if (!selection->regions.empty()) {
+		have_selection = true;
+		rs = selection->regions;
+	}
+
+	if (entered_regionview) {
+		have_entered = true;
+		rs.add (entered_regionview);
+	}
+
+	if (rs.empty() && !selection->tracks.empty()) {
+
+		/* no selected regions, but some selected tracks.
+		 */
+
+		if (_edit_point == EditAtMouse) {
+			if (!within_track_canvas) {
+				/* pointer is not in canvas, so edit point is meaningless */
+				have_edit_point = false;
+			} else {
+				/* inside canvas. we don't know where the edit
+				   point will be when an action is invoked, but
+				   assume it could intersect with a region.
+				*/
+				have_edit_point = true;
+			}
+		} else {
+			RegionSelection at_edit_point;
+			framepos_t const where = get_preferred_edit_position (Editing::EDIT_IGNORE_NONE, false, !within_track_canvas);
+			get_regions_at (at_edit_point, where, selection->tracks);
+			if (!at_edit_point.empty()) {
+				have_edit_point = true;
+			}
+			if (rs.empty()) {
+				rs.insert (rs.end(), at_edit_point.begin(), at_edit_point.end());
+			}
+		}
+	}
+
+	//std::cerr << "\tfinal have selection: " << have_selection
+	// << " have entered " << have_entered
+	// << " have edit point " << have_edit_point
+	// << " EP = " << enum_2_string (_edit_point)
+	// << std::endl;
+
+	typedef std::map<std::string,RegionAction> RegionActionMap;
 
 	_ignore_region_action = true;
+
+	for (RegionActionMap::iterator x = region_action_map.begin(); x != region_action_map.end(); ++x) {
+		RegionActionTarget tgt = x->second.target;
+		bool sensitive = false;
+
+		if ((tgt & SelectedRegions) && have_selection) {
+			sensitive = true;
+		} else if ((tgt & EnteredRegions) && have_entered) {
+			sensitive = true;
+		} else if ((tgt & EditPointRegions) && have_edit_point) {
+			sensitive = true;
+		}
+
+		x->second.action->set_sensitive (sensitive);
+	}
 
 	/* Look through the regions that are selected and make notes about what we have got */
 
@@ -1247,12 +1363,7 @@ Editor::sensitize_the_right_region_actions ()
 		/* others were already marked sensitive */
 	}
 
-	if (_edit_point == EditAtMouse) {
-		_region_actions->get_action("set-region-sync-position")->set_sensitive (false);
-		_region_actions->get_action("trim-front")->set_sensitive (false);
-		_region_actions->get_action("trim-back")->set_sensitive (false);
-		_region_actions->get_action("place-transient")->set_sensitive (false);
-	}
+	/* ok, moving along... */
 
 	if (have_compound_regions) {
 		_region_actions->get_action("uncombine-regions")->set_sensitive (true);
@@ -1299,8 +1410,12 @@ Editor::sensitize_the_right_region_actions ()
 	a = Glib::RefPtr<ToggleAction>::cast_dynamic (_region_actions->get_action("toggle-region-lock-style"));
 	a->set_active (have_position_lock_style_music && !have_position_lock_style_audio);
 
-	if (have_position_lock_style_music && have_position_lock_style_audio) {
-		// a->set_inconsistent ();
+	vector<Widget*> proxies = a->get_proxies();
+	for (vector<Widget*>::iterator p = proxies.begin(); p != proxies.end(); ++p) {
+		Gtk::CheckMenuItem* cmi = dynamic_cast<Gtk::CheckMenuItem*> (*p);
+		if (cmi) {
+			cmi->set_inconsistent (have_position_lock_style_music && have_position_lock_style_audio);
+		}
 	}
 
 	a = Glib::RefPtr<ToggleAction>::cast_dynamic (_region_actions->get_action("toggle-region-mute"));
@@ -1354,7 +1469,6 @@ Editor::sensitize_the_right_region_actions ()
 	_all_region_actions_sensitized = false;
 }
 
-
 void
 Editor::region_selection_changed ()
 {
@@ -1376,16 +1490,7 @@ Editor::region_selection_changed ()
 	_regions->block_change_connection (false);
 	editor_regions_selection_changed_connection.block(false);
 
-	if (selection->regions.empty()) {
-		sensitize_all_region_actions (false);
-	} else {
-		if (!_all_region_actions_sensitized) {
-			/* This selection change might have changed what region actions
-			   are allowed, so sensitize them all in case a key is pressed.
-			*/
-			sensitize_all_region_actions (true);
-		}
-	}
+	sensitize_the_right_region_actions (false);
 
 	/* propagate into backend */
 

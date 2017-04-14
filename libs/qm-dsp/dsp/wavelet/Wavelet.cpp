@@ -17,10 +17,6 @@
 
 #include <cassert>
 
-#ifdef _MSC_VER
-#pragma warning(disable:4305)
-#endif
-
 std::string
 Wavelet::getWaveletName(Type wavelet)
 {
@@ -1847,7 +1843,10 @@ Wavelet::createDecompositionFilters(Type wavelet,
         break;
     }
 
-    assert(flength == lpd.size());
-    assert(flength == hpd.size());
+    // avoid compiler warning for unused value if assert is not compiled in:
+    (void)flength;
+
+    assert(flength == int(lpd.size()));
+    assert(flength == int(hpd.size()));
 }
 

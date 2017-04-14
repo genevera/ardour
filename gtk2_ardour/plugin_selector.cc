@@ -269,6 +269,16 @@ PluginSelector::added_row_clicked(GdkEventButton* event)
 		btn_remove_clicked();
 }
 
+static bool is_analyzer (const PluginInfoPtr& info) {
+	// Anaylsis, Analyzer are for backwards compatibility (vst cache)
+	return info->in_category ("Analyser") || info->in_category ("Anaylsis") ||  info->in_category ("Analyzer");
+}
+
+static bool is_util (const PluginInfoPtr& info) {
+	// all MIDI plugins which are not Instruments are Utils.
+	return info->in_category ("Utility") || info->in_category ("MIDI") || info->in_category ("Generator");
+}
+
 bool
 PluginSelector::show_this_plugin (const PluginInfoPtr& info, const std::string& filterstr)
 {
@@ -290,10 +300,10 @@ PluginSelector::show_this_plugin (const PluginInfoPtr& info, const std::string& 
 	if (_show_instruments == Gtkmm2ext::Off && info->is_instrument()) {
 		return false;
 	}
-	if (_show_analysers == Gtkmm2ext::Off && info->in_category ("Analyser")) {
+	if (_show_analysers == Gtkmm2ext::Off && is_analyzer (info)) {
 		return false;
 	}
-	if (_show_utils == Gtkmm2ext::Off && info->in_category ("Utility")) {
+	if (_show_utils == Gtkmm2ext::Off && is_util (info)) {
 		return false;
 	}
 
@@ -305,10 +315,10 @@ PluginSelector::show_this_plugin (const PluginInfoPtr& info, const std::string& 
 	if (_show_instruments == Gtkmm2ext::ExplicitActive && info->is_instrument()) {
 		exp_ok = true;
 	}
-	if (_show_analysers == Gtkmm2ext::ExplicitActive && info->in_category ("Analyser")) {
+	if (_show_analysers == Gtkmm2ext::ExplicitActive && is_analyzer(info)) {
 		exp_ok = true;
 	}
-	if (_show_utils == Gtkmm2ext::ExplicitActive && info->in_category ("Utility")) {
+	if (_show_utils == Gtkmm2ext::ExplicitActive && is_util (info)) {
 		exp_ok = true;
 	}
 	if (_show_instruments == Gtkmm2ext::ExplicitActive  || _show_analysers == Gtkmm2ext::ExplicitActive || _show_utils == Gtkmm2ext::ExplicitActive) {
@@ -785,6 +795,34 @@ PluginSelector::build_plugin_menu ()
 	items.push_back (MenuElem (_("By Category"), *manage (by_category)));
 }
 
+string
+GetPluginTypeStr(PluginInfoPtr info)
+{
+	string type;
+	
+	switch (info->type) {
+	case LADSPA:
+		type = X_(" (LADSPA)");
+		break;
+	case AudioUnit:
+		type = X_(" (AU)");
+		break;
+	case LV2:
+		type = X_(" (LV2)");
+		break;
+	case Windows_VST:
+	case LXVST:
+	case MacVST:
+		type = X_(" (VST)");
+		break;
+	case Lua:
+		type = X_(" (Lua)");
+		break;
+	}
+	
+	return type;
+}
+
 Gtk::Menu*
 PluginSelector::create_favs_menu (PluginInfoList& all_plugs)
 {
@@ -798,7 +836,8 @@ PluginSelector::create_favs_menu (PluginInfoList& all_plugs)
 
 	for (PluginInfoList::const_iterator i = all_plugs.begin(); i != all_plugs.end(); ++i) {
 		if (manager.get_status (*i) == PluginManager::Favorite) {
-			MenuElem elem ((*i)->name, (sigc::bind (sigc::mem_fun (*this, &PluginSelector::plugin_chosen_from_menu), *i)));
+			string typ = GetPluginTypeStr(*i);
+			MenuElem elem ((*i)->name + typ, (sigc::bind (sigc::mem_fun (*this, &PluginSelector::plugin_chosen_from_menu), *i)));
 			elem.get_child()->set_use_underline (false);
 			favs->items().push_back (elem);
 		}
@@ -857,7 +896,8 @@ PluginSelector::create_by_creator_menu (ARDOUR::PluginInfoList& all_plugs)
 			creator_submenu_map.insert (pair<std::string,Menu*> (creator, submenu));
 			submenu->set_name("ArdourContextMenu");
 		}
-		MenuElem elem ((*i)->name, (sigc::bind (sigc::mem_fun (*this, &PluginSelector::plugin_chosen_from_menu), *i)));
+		string typ = GetPluginTypeStr(*i);
+		MenuElem elem ((*i)->name+typ, (sigc::bind (sigc::mem_fun (*this, &PluginSelector::plugin_chosen_from_menu), *i)));
 		elem.get_child()->set_use_underline (false);
 		submenu->items().push_back (elem);
 	}
@@ -895,7 +935,8 @@ PluginSelector::create_by_category_menu (ARDOUR::PluginInfoList& all_plugs)
 			category_submenu_map.insert (pair<std::string,Menu*> (category, submenu));
 			submenu->set_name("ArdourContextMenu");
 		}
-		MenuElem elem ((*i)->name, (sigc::bind (sigc::mem_fun (*this, &PluginSelector::plugin_chosen_from_menu), *i)));
+		string typ = GetPluginTypeStr(*i);
+		MenuElem elem ((*i)->name + typ, (sigc::bind (sigc::mem_fun (*this, &PluginSelector::plugin_chosen_from_menu), *i)));
 		elem.get_child()->set_use_underline (false);
 		submenu->items().push_back (elem);
 	}

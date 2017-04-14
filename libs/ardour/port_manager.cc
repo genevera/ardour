@@ -896,6 +896,7 @@ PortManager::port_is_control_only (std::string const& name)
 		const char * const control_only_ports[] = {
 			X_(".*Ableton Push.*"),
 			X_(".*FaderPort .*"),
+			X_(".*FaderPort8 .*"),
 		};
 
 		pattern = "(";
@@ -1069,7 +1070,6 @@ PortManager::save_midi_port_info ()
 		for (MidiPortInfo::iterator i = midi_port_info.begin(); i != midi_port_info.end(); ++i) {
 			XMLNode* node = new XMLNode (X_("port"));
 			node->add_property (X_("name"), i->first);
-			node->add_property (X_("pretty-name"), i->second.pretty_name);
 			node->add_property (X_("input"), i->second.input ? X_("yes") : X_("no"));
 			node->add_property (X_("properties"), enum_2_string (i->second.properties));
 			root->add_child_nocopy (*node);
@@ -1112,11 +1112,6 @@ PortManager::load_midi_port_info ()
 		}
 
 		name = prop->value ();
-
-		if ((prop = (*i)->property (X_("pretty-name"))) == 0) {
-			continue;
-		}
-		mpi.pretty_name = prop->value();
 
 		if ((prop = (*i)->property (X_("input"))) == 0) {
 			continue;
